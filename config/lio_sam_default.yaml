@@ -32,7 +32,7 @@ liorf:
   lidarMaxRange: 1000.0                       # default: 1000.0, maximum lidar range to be used
 
   # IMU Settings
-  imuType: 0                                  # 0: 6-axis  1: 9-axis
+  imuType: 6                                  #  6-axis   9-axis
   imuRate: 500.0
   imuAccNoise: 3.9939570888238808e-03
   imuGyrNoise: 1.5636343949698187e-03
