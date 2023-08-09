@@ -45,9 +45,12 @@ include_directories(include)
 # <!-- liorf_yjz_lucky_boy -->
 # Range Image Projection
 ament_auto_add_executable(${PROJECT_NAME}_imageProjection src/imageProjection.cpp)
-#add_dependencies(${PROJECT_NAME}_imageProjection ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
-#target_link_libraries(${PROJECT_NAME}_imageProjection ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES})
 rosidl_target_interfaces(${PROJECT_NAME}_imageProjection ${PROJECT_NAME} "rosidl_typesupport_cpp")
+
+## IMU Preintegration
+ament_auto_add_executable(${PROJECT_NAME}_imuPreintegration src/imuPreintegration.cpp)
+rosidl_target_interfaces(${PROJECT_NAME}_imuPreintegration ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(${PROJECT_NAME}_imuPreintegration Boost::timer ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} gtsam)
 
 
 #
@@ -57,9 +60,7 @@ rosidl_target_interfaces(${PROJECT_NAME}_imageProjection ${PROJECT_NAME} "rosidl
 #target_compile_options(${PROJECT_NAME}_mapOptmization PRIVATE ${OpenMP_CXX_FLAGS})
 #target_link_libraries(${PROJECT_NAME}_mapOptmization Boost::timer ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} ${OpenMP_CXX_FLAGS} ${GeographicLib_LIBRARIES} gtsam)
 #
-## IMU Preintegration
-#add_executable(${PROJECT_NAME}_imuPreintegration src/imuPreintegration.cpp ${common_lib})
-#target_link_libraries(${PROJECT_NAME}_imuPreintegration Boost::timer ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} gtsam)
+
 
 
 ament_auto_package(INSTALL_TO_SHARE
