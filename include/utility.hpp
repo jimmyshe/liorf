@@ -132,6 +132,8 @@ public:
     float odometrySurfLeafSize;
     float mappingCornerLeafSize;
     float mappingSurfLeafSize;
+    float surroundingKeyframeMapLeafSize;
+    float loopClosureICPSurfLeafSize;
 
     float z_tollerance;
     float rotation_tollerance;
@@ -162,13 +164,13 @@ public:
 
     ParamServer(std::string node_name, const rclcpp::NodeOptions &options)
         : Node(node_name, options) {
-        declare_parameter("pointCloudTopic", "points");
+        declare_parameter("pointCloudTopic", "/top_lidar/points");
         get_parameter("pointCloudTopic", pointCloudTopic);
-        declare_parameter("imuTopic", "imu/data");
+        declare_parameter("imuTopic", "/imu");
         get_parameter("imuTopic", imuTopic);
-        declare_parameter("odomTopic", "lio_sam/odometry/imu");
+        declare_parameter("odomTopic", "liorf/odometry/imu");
         get_parameter("odomTopic", odomTopic);
-        declare_parameter("gpsTopic", "lio_sam/odometry/gps");
+        declare_parameter("gpsTopic", "/fix");
         get_parameter("gpsTopic", gpsTopic);
 
         declare_parameter("lidarFrame", "laser_data_frame");
@@ -293,6 +295,9 @@ public:
         declare_parameter("mappingSurfLeafSize", 0.4);
         get_parameter("mappingSurfLeafSize", mappingSurfLeafSize);
 
+        declare_parameter("surroundingKeyframeMapLeafSize", 0.2);
+        get_parameter("surroundingKeyframeMapLeafSize",surroundingKeyframeMapLeafSize);
+
         declare_parameter("z_tollerance", 1000.0);
         get_parameter("z_tollerance", z_tollerance);
         declare_parameter("rotation_tollerance", 1000.0);
@@ -314,6 +319,9 @@ public:
         declare_parameter("surroundingKeyframeSearchRadius", 50.0);
         get_parameter("surroundingKeyframeSearchRadius",
                       surroundingKeyframeSearchRadius);
+
+        declare_parameter("loopClosureICPSurfLeafSize",0.3);
+        get_parameter("loopClosureICPSurfLeafSize",loopClosureICPSurfLeafSize);
 
         declare_parameter("loopClosureEnableFlag", true);
         get_parameter("loopClosureEnableFlag", loopClosureEnableFlag);

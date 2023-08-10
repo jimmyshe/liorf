@@ -35,9 +35,12 @@ target_include_directories(common PUBLIC lib)
 target_link_libraries(common PUBLIC ${PCL_LIBRARIES})
 
 
-
-
 include_directories(include)
+
+
+add_library(scancontext src/Scancontext.cpp)
+target_link_libraries(scancontext PUBLIC ${PCL_LIBRARIES} ${OpenCV_LIBRARIES})
+
 
 ###########
 ## Build ##
@@ -61,13 +64,17 @@ target_link_libraries(${PROJECT_NAME}_transformFusion Boost::timer ${PCL_LIBRARI
 
 #
 ## Mapping Optimization
-ament_auto_add_executable(${PROJECT_NAME}_mapOptmization src/mapOptmization.cpp src/Scancontext.cpp)
+ament_auto_add_executable(${PROJECT_NAME}_mapOptmization src/mapOptmization.cpp)
 rosidl_target_interfaces(${PROJECT_NAME}_mapOptmization ${PROJECT_NAME} "rosidl_typesupport_cpp")
-
 target_compile_options(${PROJECT_NAME}_mapOptmization PRIVATE ${OpenMP_CXX_FLAGS})
-target_link_libraries(${PROJECT_NAME}_mapOptmization Boost::timer ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} ${OpenMP_CXX_FLAGS} ${GeographicLib_LIBRARIES} gtsam)
-
-
+target_link_libraries(${PROJECT_NAME}_mapOptmization
+        Boost::timer
+        ${PCL_LIBRARIES}
+        ${OpenCV_LIBRARIES}
+        ${OpenMP_CXX_FLAGS}
+        ${GeographicLib_LIBRARIES}
+        gtsam
+        scancontext)
 
 
 ament_auto_package(INSTALL_TO_SHARE
