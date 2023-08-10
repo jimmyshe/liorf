@@ -2,6 +2,8 @@
 #include "utility.hpp"
 #include <algorithm>
 #include <array>
+#include <pcl/filters/filter.h>
+
 // <!-- liorf_localization_yjz_lucky_boy -->
 struct VelodynePointXYZIRT {
     PCL_ADD_POINT4D
@@ -115,6 +117,7 @@ private:
     double timeScanEnd;               // time of current scan end
     std_msgs::msg::Header cloudHeader;// latest cloud header
 
+
 public:
     ImageProjection(const rclcpp::NodeOptions &options)
         : ParamServer("lio_sam_imageProjection", options), deskewFlag(0) {
@@ -192,7 +195,6 @@ public:
 
     void imuHandler(const sensor_msgs::msg::Imu::SharedPtr imuMsg) {
         sensor_msgs::msg::Imu thisImu = imuConverter(*imuMsg);
-
         std::lock_guard<std::mutex> lock1(imuLock);
         imuQueue.push_back(thisImu);
 
@@ -235,79 +237,89 @@ public:
     bool cachePointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr &laserCloudMsg) {
         // cache point cloud
         cloudQueue.push_back(*laserCloudMsg);
+
         if (cloudQueue.size() <= 2) { return false; }
 
         // convert cloud
         currentCloudMsg = std::move(cloudQueue.front());
         cloudQueue.pop_front();
-        if (sensor == SensorType::VELODYNE || sensor == SensorType::LIVOX) {
-            pcl::moveFromROSMsg(currentCloudMsg, *laserCloudIn);
-        } else if (sensor == SensorType::OUSTER) {
-            // Convert to Velodyne format
-            pcl::moveFromROSMsg(currentCloudMsg, *tmpOusterCloudIn);
-            laserCloudIn->points.resize(tmpOusterCloudIn->size());
-            laserCloudIn->is_dense = tmpOusterCloudIn->is_dense;
-            for (size_t i = 0; i < tmpOusterCloudIn->size(); i++) {
-                auto &src = tmpOusterCloudIn->points[i];
-                auto &dst = laserCloudIn->points[i];
-                dst.x = src.x;
-                dst.y = src.y;
-                dst.z = src.z;
-                dst.intensity = src.intensity;
-                dst.ring = src.ring;
-                dst.time = src.t * 1e-9f;
-            }
-        }// <!-- liorf_yjz_lucky_boy -->
-        else if (sensor == SensorType::MULRAN) {
-            // Convert to Velodyne format
-            pcl::moveFromROSMsg(currentCloudMsg, *tmpMulranCloudIn);
-            laserCloudIn->points.resize(tmpMulranCloudIn->size());
-            laserCloudIn->is_dense = tmpMulranCloudIn->is_dense;
-            for (size_t i = 0; i < tmpMulranCloudIn->size(); i++) {
-                auto &src = tmpMulranCloudIn->points[i];
-                auto &dst = laserCloudIn->points[i];
-                dst.x = src.x;
-                dst.y = src.y;
-                dst.z = src.z;
-                dst.intensity = src.intensity;
-                dst.ring = src.ring;
-                dst.time = static_cast<float>(src.t);
-            }
-        }// <!-- liorf_yjz_lucky_boy -->
-        else if (sensor == SensorType::ROBOSENSE) {
-            pcl::PointCloud<RobosensePointXYZIRT>::Ptr tmpRobosenseCloudIn(
-                    new pcl::PointCloud<RobosensePointXYZIRT>());
-            // Convert to robosense format
-            pcl::moveFromROSMsg(currentCloudMsg, *tmpRobosenseCloudIn);
-            laserCloudIn->points.resize(tmpRobosenseCloudIn->size());
-            laserCloudIn->is_dense = tmpRobosenseCloudIn->is_dense;
 
-            double start_stamptime = tmpRobosenseCloudIn->points[0].timestamp;
-            for (size_t i = 0; i < tmpRobosenseCloudIn->size(); i++) {
-                auto &src = tmpRobosenseCloudIn->points[i];
-                auto &dst = laserCloudIn->points[i];
-                dst.x = src.x;
-                dst.y = src.y;
-                dst.z = src.z;
-                dst.intensity = src.intensity;
-                dst.ring = src.ring;
-                dst.time = src.timestamp - start_stamptime;
-            }
-        } else {
-            RCLCPP_ERROR_STREAM(get_logger(), "Unknown sensor type: " << int(sensor));
-            rclcpp::shutdown();
-        }
+        // convert cloud in my way
+        pcl::PointCloud<PointXYZIRT>::Ptr tmpCloud(new pcl::PointCloud<PointXYZIRT>());
+        pcl::fromROSMsg(currentCloudMsg, *tmpCloud);
+
+        // remove nan points
+        std::vector<int> indices;
+        pcl::removeNaNFromPointCloud(*tmpCloud, *laserCloudIn, indices);
+
+        //        if (sensor == SensorType::VELODYNE || sensor == SensorType::LIVOX) {
+        //            pcl::moveFromROSMsg(currentCloudMsg, *laserCloudIn);
+        //        } else if (sensor == SensorType::OUSTER) {
+        //            // Convert to Velodyne format
+        //            pcl::moveFromROSMsg(currentCloudMsg, *tmpOusterCloudIn);
+        //            laserCloudIn->points.resize(tmpOusterCloudIn->size());
+        //            laserCloudIn->is_dense = tmpOusterCloudIn->is_dense;
+        //            for (size_t i = 0; i < tmpOusterCloudIn->size(); i++) {
+        //                auto &src = tmpOusterCloudIn->points[i];
+        //                auto &dst = laserCloudIn->points[i];
+        //                dst.x = src.x;
+        //                dst.y = src.y;
+        //                dst.z = src.z;
+        //                dst.intensity = src.intensity;
+        //                dst.ring = src.ring;
+        //                dst.time = src.t * 1e-9f;
+        //            }
+        //        }// <!-- liorf_yjz_lucky_boy -->
+        //        else if (sensor == SensorType::MULRAN) {
+        //            // Convert to Velodyne format
+        //            pcl::moveFromROSMsg(currentCloudMsg, *tmpMulranCloudIn);
+        //            laserCloudIn->points.resize(tmpMulranCloudIn->size());
+        //            laserCloudIn->is_dense = tmpMulranCloudIn->is_dense;
+        //            for (size_t i = 0; i < tmpMulranCloudIn->size(); i++) {
+        //                auto &src = tmpMulranCloudIn->points[i];
+        //                auto &dst = laserCloudIn->points[i];
+        //                dst.x = src.x;
+        //                dst.y = src.y;
+        //                dst.z = src.z;
+        //                dst.intensity = src.intensity;
+        //                dst.ring = src.ring;
+        //                dst.time = static_cast<float>(src.t);
+        //            }
+        //        }// <!-- liorf_yjz_lucky_boy -->
+        //        else if (sensor == SensorType::ROBOSENSE) {
+        //            pcl::PointCloud<RobosensePointXYZIRT>::Ptr tmpRobosenseCloudIn(
+        //                    new pcl::PointCloud<RobosensePointXYZIRT>());
+        //            // Convert to robosense format
+        //            pcl::moveFromROSMsg(currentCloudMsg, *tmpRobosenseCloudIn);
+        //            laserCloudIn->points.resize(tmpRobosenseCloudIn->size());
+        //            laserCloudIn->is_dense = tmpRobosenseCloudIn->is_dense;
+        //
+        //            double start_stamptime = tmpRobosenseCloudIn->points[0].timestamp;
+        //            for (size_t i = 0; i < tmpRobosenseCloudIn->size(); i++) {
+        //                auto &src = tmpRobosenseCloudIn->points[i];
+        //                auto &dst = laserCloudIn->points[i];
+        //                dst.x = src.x;
+        //                dst.y = src.y;
+        //                dst.z = src.z;
+        //                dst.intensity = src.intensity;
+        //                dst.ring = src.ring;
+        //                dst.time = src.timestamp - start_stamptime;
+        //            }
+        //        } else {
+        //            RCLCPP_ERROR_STREAM(get_logger(), "Unknown sensor type: " << int(sensor));
+        //            rclcpp::shutdown();
+        //        }
+
+        //        if (laserCloudIn->is_dense == false) {
+        //            RCLCPP_ERROR(get_logger(), "Point cloud is not in dense format, please remove NaN points first!");
+        //            rclcpp::shutdown();
+        //        }
 
         // get timestamp
         cloudHeader = currentCloudMsg.header;
         timeScanCur = stamp2Sec(cloudHeader.stamp);
         timeScanEnd = timeScanCur + laserCloudIn->points.back().time;
 
-        // check dense flag
-        if (laserCloudIn->is_dense == false) {
-            RCLCPP_ERROR(get_logger(), "Point cloud is not in dense format, please remove NaN points first!");
-            rclcpp::shutdown();
-        }
 
         // check ring channel
         static int ringFlag = 0;
@@ -563,6 +575,11 @@ public:
 
         if (cloudInfo.odom_available == false || odomDeskewFlag == false)
             return;
+
+
+        if (timeScanEnd - timeScanCur < 10E-3) {
+            return;
+        }
 
         float ratio = relTime / (timeScanEnd - timeScanCur);
 

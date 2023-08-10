@@ -173,7 +173,7 @@ public:
         declare_parameter("gpsTopic", "/fix");
         get_parameter("gpsTopic", gpsTopic);
 
-        declare_parameter("lidarFrame", "laser_data_frame");
+        declare_parameter("lidarFrame", "top_lidar_link");
         get_parameter("lidarFrame", lidarFrame);
         declare_parameter("baselinkFrame", "base_link");
         get_parameter("baselinkFrame", baselinkFrame);
