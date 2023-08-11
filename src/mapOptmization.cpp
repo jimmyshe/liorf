@@ -126,7 +126,7 @@ public:
     rclcpp::Time timeLaserInfoStamp;
     double timeLaserInfoCur;
 
-    float transformTobeMapped[6];
+    float transformTobeMapped[6]; //roll,pitch,yaw,x,y,z
 
     std::mutex mtx;
     std::mutex mtxLoopInfo;
@@ -252,11 +252,6 @@ public:
         cloudInfo = *msgIn;
         pcl::fromROSMsg(msgIn->cloud_deskewed, *laserCloudSurfLast);
 
-        // TODO
-        // ......
-        // remapping
-        // ......
-        // END
 
         std::lock_guard<std::mutex> lock(mtx);
 
@@ -860,9 +855,10 @@ public:
     void updateInitialGuess() {
         // save current transformation before any processing
         incrementalOdometryAffineFront = trans2Affine3f(transformTobeMapped);
-
         static Eigen::Affine3f lastImuTransformation;
-        // initialization
+
+
+        // initialization and update transformTobeMapped[]
         if (cloudKeyPoses3D->points.empty())
         {
             transformTobeMapped[0] = cloudInfo.imu_roll_init;
@@ -895,9 +891,7 @@ public:
                 Eigen::Affine3f transFinal = transTobe * transIncre;
                 pcl::getTranslationAndEulerAngles(transFinal, transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5],
                                                   transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
-
                 lastImuPreTransformation = transBack;
-
                 lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imu_roll_init, cloudInfo.imu_pitch_init, cloudInfo.imu_yaw_init); // save imu before return;
                 return;
             }
@@ -1586,15 +1580,15 @@ public:
         laserOdometryROS.pose.pose.orientation = quat_msg;
         pubLaserOdometryGlobal->publish(laserOdometryROS);
 
-        // Publish TF
-        quat_tf.setRPY(transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
-        tf2::Transform t_odom_to_lidar = tf2::Transform(quat_tf, tf2::Vector3(transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5]));
-        tf2::TimePoint time_point = tf2_ros::fromRclcpp(timeLaserInfoStamp);
-        tf2::Stamped<tf2::Transform> temp_odom_to_lidar(t_odom_to_lidar, time_point, odometryFrame);
-        geometry_msgs::msg::TransformStamped trans_odom_to_lidar;
-        tf2::convert(temp_odom_to_lidar, trans_odom_to_lidar);
-        trans_odom_to_lidar.child_frame_id = "lidar_link";//todo:: why hard code
-        br->sendTransform(trans_odom_to_lidar);
+        // Publish TF // fixme:
+//        quat_tf.setRPY(transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
+//        tf2::Transform t_odom_to_lidar = tf2::Transform(quat_tf, tf2::Vector3(transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5]));
+//        tf2::TimePoint time_point = tf2_ros::fromRclcpp(timeLaserInfoStamp);
+//        tf2::Stamped<tf2::Transform> temp_odom_to_lidar(t_odom_to_lidar, time_point, odometryFrame);
+//        geometry_msgs::msg::TransformStamped trans_odom_to_lidar;
+//        tf2::convert(temp_odom_to_lidar, trans_odom_to_lidar);
+//        trans_odom_to_lidar.child_frame_id = "lidar_link";//todo:: why hard code
+//        br->sendTransform(trans_odom_to_lidar);
 
         // Publish odometry for ROS (incremental)
         static bool lastIncreOdomPubFlag = false;

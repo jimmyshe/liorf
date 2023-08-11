@@ -106,6 +106,7 @@ public:
     float lidarMaxRange;
 
     // IMU
+    std::string imu_link = "imu_link";
     ImuType imuType;
     float imuRate;
     float imuAccNoise;
@@ -245,7 +246,7 @@ public:
             rclcpp::shutdown();
         }
 
-        declare_parameter("imuRate", 500.0);
+        declare_parameter("imuRate", 20.0);
         get_parameter("imuRate", imuRate);
         declare_parameter("imuAccNoise", 9e-4);
         get_parameter("imuAccNoise", imuAccNoise);
@@ -305,7 +306,7 @@ public:
 
         declare_parameter("numberOfCores", 4);
         get_parameter("numberOfCores", numberOfCores);
-        declare_parameter("mappingProcessInterval", 0.15);
+        declare_parameter("mappingProcessInterval", 0.2);
         get_parameter("mappingProcessInterval", mappingProcessInterval);
 
         declare_parameter("surroundingkeyframeAddingDistThreshold", 1.0);

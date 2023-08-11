@@ -53,7 +53,6 @@ public:
                 imuOdomOpt);
 
         pubImuOdometry = create_publisher<nav_msgs::msg::Odometry>(odomTopic, qos_imu);
-        pubImuPath = create_publisher<nav_msgs::msg::Path>("liorf/imu/path", qos);
     }
 
 
@@ -83,15 +82,11 @@ public:
             }
         }
 
-
         Eigen::Isometry3d imuOdomAffineFront = odom2affine(imuOdomQueue.front());
         Eigen::Isometry3d imuOdomAffineBack = odom2affine(imuOdomQueue.back());
         Eigen::Isometry3d imuOdomAffineInc = imuOdomAffineFront.inverse() * imuOdomAffineBack;
         Eigen::Isometry3d imuOdomAffineLast = lidarOdomAffine * imuOdomAffineInc;
-
-
         geometry_msgs::msg::TransformStamped odom_to_laser = tf2::eigenToTransform(imuOdomAffineLast);
-
 
         // publish latest odometry
         nav_msgs::msg::Odometry latest_odom;
@@ -120,28 +115,9 @@ public:
         }
         geometry_msgs::msg::TransformStamped odom_to_base;
         tf2::convert(tCur, odom_to_base);
-        odom_to_base.child_frame_id = baselinkFrame;
+        odom_to_base.child_frame_id = odomMsg->child_frame_id;
         tfBroadcaster->sendTransform(odom_to_base);
 
-        // publish IMU path
-        static nav_msgs::msg::Path imuPath;
-        static double last_path_time = -1;
-        double imuTime = stamp2Sec(imuOdomQueue.back().header.stamp);
-        if (imuTime - last_path_time > 0.1) {
-            last_path_time = imuTime;
-            geometry_msgs::msg::PoseStamped pose_stamped;
-            pose_stamped.header.stamp = imuOdomQueue.back().header.stamp;
-            pose_stamped.header.frame_id = odometryFrame;
-            pose_stamped.pose = latest_odom.pose.pose;
-            imuPath.poses.push_back(pose_stamped);
-            while (!imuPath.poses.empty() && stamp2Sec(imuPath.poses.front().header.stamp) < lidarOdomTime - 1.0)
-                imuPath.poses.erase(imuPath.poses.begin());
-            if (pubImuPath->get_subscription_count() != 0) {
-                imuPath.header.stamp = imuOdomQueue.back().header.stamp;
-                imuPath.header.frame_id = odometryFrame;
-                pubImuPath->publish(imuPath);
-            }
-        }
     }
 };
 
