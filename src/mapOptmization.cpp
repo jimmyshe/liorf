@@ -172,7 +172,7 @@ public:
 
 
         subCloud = create_subscription<liorf::msg::CloudInfo>(
-                "liorf/deskew/cloud_info", qos,
+                "liorf/cloud_info", qos,
                 std::bind(&mapOptimization::laserCloudInfoHandler, this, std::placeholders::_1));
         subGPS = create_subscription<sensor_msgs::msg::NavSatFix>(
                 gpsTopic, 200,

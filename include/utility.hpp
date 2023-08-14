@@ -297,7 +297,7 @@ public:
         get_parameter("mappingSurfLeafSize", mappingSurfLeafSize);
 
         declare_parameter("surroundingKeyframeMapLeafSize", 0.2);
-        get_parameter("surroundingKeyframeMapLeafSize",surroundingKeyframeMapLeafSize);
+        get_parameter("surroundingKeyframeMapLeafSize", surroundingKeyframeMapLeafSize);
 
         declare_parameter("z_tollerance", 1000.0);
         get_parameter("z_tollerance", z_tollerance);
@@ -321,8 +321,8 @@ public:
         get_parameter("surroundingKeyframeSearchRadius",
                       surroundingKeyframeSearchRadius);
 
-        declare_parameter("loopClosureICPSurfLeafSize",0.3);
-        get_parameter("loopClosureICPSurfLeafSize",loopClosureICPSurfLeafSize);
+        declare_parameter("loopClosureICPSurfLeafSize", 0.3);
+        get_parameter("loopClosureICPSurfLeafSize", loopClosureICPSurfLeafSize);
 
         declare_parameter("loopClosureEnableFlag", true);
         get_parameter("loopClosureEnableFlag", loopClosureEnableFlag);
@@ -411,6 +411,11 @@ double stamp2Sec(const T &stamp) {
 }
 
 template<typename T>
+int64_t stamp2NanoSec(const T &stamp) {
+    return rclcpp::Time(stamp).nanoseconds();
+}
+
+template<typename T>
 void imuAngular2rosAngular(sensor_msgs::msg::Imu *thisImuMsg, T *angular_x,
                            T *angular_y, T *angular_z) {
     *angular_x = thisImuMsg->angular_velocity.x;
@@ -427,11 +432,11 @@ void imuAccel2rosAccel(sensor_msgs::msg::Imu *thisImuMsg, T *acc_x, T *acc_y,
 }
 
 template<typename T>
-void imuRPY2rosRPY(sensor_msgs::msg::Imu *thisImuMsg, T *rosRoll, T *rosPitch,
+void imuRPY2rosRPY(const sensor_msgs::msg::Imu& thisImuMsg, T *rosRoll, T *rosPitch,
                    T *rosYaw) {
     double imuRoll, imuPitch, imuYaw;
     tf2::Quaternion orientation;
-    tf2::fromMsg(thisImuMsg->orientation, orientation);
+    tf2::fromMsg(thisImuMsg.orientation, orientation);
     tf2::Matrix3x3(orientation).getRPY(imuRoll, imuPitch, imuYaw);
 
     *rosRoll = imuRoll;
@@ -448,8 +453,7 @@ inline float pointDistance(PointType p1, PointType p2) {
                 (p1.z - p2.z) * (p1.z - p2.z));
 }
 
-inline Eigen::Isometry3d odom2affine(nav_msgs::msg::Odometry odom)
-{
+inline Eigen::Isometry3d odom2affine(nav_msgs::msg::Odometry odom) {
     tf2::Transform t;
     tf2::fromMsg(odom.pose.pose, t);
     return tf2::transformToEigen(tf2::toMsg(t));

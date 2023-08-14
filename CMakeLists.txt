@@ -1,9 +1,8 @@
 cmake_minimum_required(VERSION 3.11)
 project(liorf)
 
-#set(CMAKE_BUILD_TYPE "Release")
-#set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g -pthread")
-set(CMAKE_CXX_STANDARD 14)
+
+set(CMAKE_CXX_STANDARD 20)
 
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_auto REQUIRED)
@@ -40,6 +39,8 @@ include_directories(include)
 
 add_library(scancontext src/Scancontext.cpp)
 target_link_libraries(scancontext PUBLIC ${PCL_LIBRARIES} ${OpenCV_LIBRARIES})
+
+
 
 
 ###########
