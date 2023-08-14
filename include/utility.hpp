@@ -185,7 +185,7 @@ public:
 
         declare_parameter("useImuHeadingInitialization", false);
         get_parameter("useImuHeadingInitialization", useImuHeadingInitialization);
-        declare_parameter("useGpsElevation", false);
+        declare_parameter("useGpsElevation", true);
         get_parameter("useGpsElevation", useGpsElevation);
         declare_parameter("gpsCovThreshold", 2.0);
         get_parameter("gpsCovThreshold", gpsCovThreshold);

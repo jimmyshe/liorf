@@ -53,18 +53,17 @@ public:
     std::deque<sensor_msgs::msg::Imu> imuQueImu;
 
 
-    // last state of imu optimized  integration
+    // last state of imu optimized  integration (graph optimized with previous slam results)
     gtsam::Pose3 prevPose_;
     gtsam::Vector3 prevVel_;
     gtsam::NavState prevState_;
     gtsam::imuBias::ConstantBias prevBias_ = gtsam::imuBias::ConstantBias();
 
-    gtsam::NavState prevStateOdom;
-    gtsam::imuBias::ConstantBias prevBiasOdom;
+    gtsam::NavState prevStateOdom;            // copy of prevState_ for odom integration
+    gtsam::imuBias::ConstantBias prevBiasOdom;// copy of prevBias_ for odom integration
 
     bool doneFirstOpt = false;
-    double lastImuT_imu = -1;
-//    double lastImuT_opt = -1;
+    double lastImuT_opt = -1;
 
     gtsam::ISAM2 optimizer;
     gtsam::NonlinearFactorGraph graphFactors;//tmp value
@@ -138,16 +137,14 @@ public:
     }
 
     void resetParams() {
-        lastImuT_imu = -1;
         doneFirstOpt = false;
         systemInitialized = false;
     }
 
     void odometry_incremental_handler(const nav_msgs::msg::Odometry::SharedPtr odomMsg) {
-        static double lastImuT_opt = -1;
         std::lock_guard<std::mutex> lock(mtx);
 
-        double currentCorrectionTime = stamp2Sec(odomMsg->header.stamp);
+        const double currentCorrectionTime = stamp2Sec(odomMsg->header.stamp);
 
         // make sure we have imu data to integrate
         if (imuQueOpt.empty()) {
@@ -243,7 +240,7 @@ public:
         }
 
 
-        // 1. integrate imu data and optimize
+        // 1. integrate all imu data before currentCorrectionTime and optimize
         while (!imuQueOpt.empty()) {
             // pop and integrate imu data that is between two optimizations
             sensor_msgs::msg::Imu *thisImu = &imuQueOpt.front();
@@ -263,20 +260,22 @@ public:
         gtsam::NonlinearFactorGraph tmp_graphFactors;//tmp value
         gtsam::Values tmp_graphValues;               //tmp value
         // add imu factor to graph
-        const auto &integrated_imu = dynamic_cast<const gtsam::PreintegratedImuMeasurements &>(*imuIntegratorOpt_);
-        gtsam::ImuFactor imu_factor(X(key - 1), V(key - 1), X(key), V(key), B(key - 1), integrated_imu);
+        const auto &preIntegrated_imu = dynamic_cast<const gtsam::PreintegratedImuMeasurements &>(*imuIntegratorOpt_);
+        gtsam::ImuFactor imu_factor(X(key - 1), V(key - 1), X(key), V(key), B(key - 1), preIntegrated_imu);
         tmp_graphFactors.add(imu_factor);
         // add imu bias between factor
-        tmp_graphFactors.add(gtsam::BetweenFactor<gtsam::imuBias::ConstantBias>(B(key - 1), B(key), gtsam::imuBias::ConstantBias(),
-                                                                            gtsam::noiseModel::Diagonal::Sigmas(sqrt(imuIntegratorOpt_->deltaTij()) * noiseModelBetweenBias)));
+        tmp_graphFactors.add(gtsam::BetweenFactor<gtsam::imuBias::ConstantBias>(
+                B(key - 1), B(key),
+                gtsam::imuBias::ConstantBias(),
+                gtsam::noiseModel::Diagonal::Sigmas(sqrt(imuIntegratorOpt_->deltaTij()) * noiseModelBetweenBias)));
         // add pose factor
         gtsam::Pose3 curPose = base_pose;
         gtsam::PriorFactor<gtsam::Pose3> pose_factor(X(key), curPose, degenerate ? correctionNoise2 : correctionNoise);
         tmp_graphFactors.add(pose_factor);
         // insert predicted values
-        gtsam::NavState propState_ = imuIntegratorOpt_->predict(prevState_, prevBias_);
-        tmp_graphValues.insert(X(key), propState_.pose());
-        tmp_graphValues.insert(V(key), propState_.v());
+        gtsam::NavState prediction_by_imu = imuIntegratorOpt_->predict(prevState_, prevBias_);
+        tmp_graphValues.insert(X(key), prediction_by_imu.pose());
+        tmp_graphValues.insert(V(key), prediction_by_imu.v());
         tmp_graphValues.insert(B(key), prevBias_);
         // optimize
         optimizer.update(tmp_graphFactors, tmp_graphValues);
@@ -301,7 +300,7 @@ public:
         prevStateOdom = prevState_;
         prevBiasOdom = prevBias_;
         // first pop imu message older than current correction data
-        double lastImuQT = -1;
+        double lastImuQT = -1;// last imu time (for dt calculation)
         while (!imuQueImu.empty() && stamp2Sec(imuQueImu.front().header.stamp) < currentCorrectionTime - delta_t) {
             lastImuQT = stamp2Sec(imuQueImu.front().header.stamp);
             imuQueImu.pop_front();
@@ -328,7 +327,7 @@ public:
 
     bool failureDetection(const gtsam::Vector3 &velCur, const gtsam::imuBias::ConstantBias &biasCur) {
         Eigen::Vector3f vel(velCur.x(), velCur.y(), velCur.z());
-        if (vel.norm() > 30) {
+        if (vel.norm() > 5) {
             RCLCPP_WARN(get_logger(), "Large velocity, reset IMU-preintegration!");
             return true;
         }
@@ -344,11 +343,13 @@ public:
     }
 
     void imuHandler(const sensor_msgs::msg::Imu::SharedPtr imu_raw) {
+        std::lock_guard<std::mutex> lock(mtx);
+
         geometry_msgs::msg::TransformStamped imu2base;
         try {
             imu2base = tf_buffer_->lookupTransform(baselinkFrame, imu_raw->header.frame_id, tf2::TimePointZero);
-            Eigen::Isometry3d t =  tf2::transformToEigen(imu2base);
-            if (t.matrix() != Eigen::Isometry3d::Identity().matrix()){
+            Eigen::Isometry3d t = tf2::transformToEigen(imu2base);
+            if (t.matrix() != Eigen::Isometry3d::Identity().matrix()) {
                 RCLCPP_FATAL(this->get_logger(), "imu to base tf is not identity, please check your tf tree or imu mount");
                 rclcpp::shutdown();
             }
@@ -360,18 +361,19 @@ public:
         }
 
 
-        std::lock_guard<std::mutex> lock(mtx);
-
         imuQueOpt.push_back(*imu_raw);
         imuQueImu.push_back(*imu_raw);
 
-//        if (!doneFirstOpt) {
-//            return;
-//        }
+
+        if (!doneFirstOpt) {
+            return;
+        }
 
         double imuTime = stamp2Sec(imu_raw->header.stamp);
-        double dt = (lastImuT_imu < 0) ? (1.0 / imuRate) : (imuTime - lastImuT_imu);
-        lastImuT_imu = imuTime;
+        static double last_imuTime = -1;
+        double dt = (last_imuTime < 0) ? (1.0 / imuRate) : (imuTime - last_imuTime);
+        last_imuTime = imuTime;
+
 
         // integrate this single imu message
         imuIntegratorImu_->integrateMeasurement(gtsam::Vector3(imu_raw->linear_acceleration.x, imu_raw->linear_acceleration.y, imu_raw->linear_acceleration.z),
@@ -379,8 +381,6 @@ public:
 
         // predict odometry
         gtsam::NavState currentState = imuIntegratorImu_->predict(prevStateOdom, prevBiasOdom);
-        // transform imu pose to baselink pose
-        gtsam::Pose3 imuPose = gtsam::Pose3(currentState.quaternion(), currentState.position());
 
 
         // publish odometry
@@ -389,6 +389,7 @@ public:
         odometry.header.frame_id = odometryFrame;
         odometry.child_frame_id = baselinkFrame;
 
+        gtsam::Pose3 imuPose = gtsam::Pose3(currentState.quaternion(), currentState.position());
 
         odometry.pose.pose.position.x = imuPose.translation().x();
         odometry.pose.pose.position.y = imuPose.translation().y();
@@ -403,6 +404,18 @@ public:
         odometry.twist.twist.angular.x = imu_raw->angular_velocity.x + prevBiasOdom.gyroscope().x();
         odometry.twist.twist.angular.y = imu_raw->angular_velocity.y + prevBiasOdom.gyroscope().y();
         odometry.twist.twist.angular.z = imu_raw->angular_velocity.z + prevBiasOdom.gyroscope().z();
+
+
+        auto cov = imuIntegratorImu_->preintMeasCov();
+
+        odometry.pose.covariance[0] = cov(3, 3);
+        odometry.pose.covariance[1 * 6 + 1] = cov(4, 4);
+        odometry.pose.covariance[2 * 6 + 2] = cov(5, 5);
+        odometry.pose.covariance[3 * 6 + 3] = cov(0, 0);
+        odometry.pose.covariance[4 * 6 + 4] = cov(1, 1);
+        odometry.pose.covariance[5 * 6 + 5] = cov(2, 2);
+
+
         pubImuIncOdometry->publish(odometry);
     }
 };

@@ -74,7 +74,7 @@ using PointXYZIRT = VelodynePointXYZIRT;
 const int queueLength = 2000;
 using namespace std::chrono_literals;
 
-/*!
+    /*!
  * \brief ImageProjection class
  *  deskew the point cloud and pub as CloudInfo
  */
