@@ -108,7 +108,7 @@ public:
         boost::shared_ptr<gtsam::PreintegrationParams> imu_params = gtsam::PreintegrationParams::MakeSharedU(imuGravity);
         imu_params->accelerometerCovariance = gtsam::Matrix33::Identity(3, 3) * pow(imuAccNoise, 2);// acc white noise in continuous
         imu_params->gyroscopeCovariance = gtsam::Matrix33::Identity(3, 3) * pow(imuGyrNoise, 2);    // gyro white noise in continuous
-        imu_params->integrationCovariance = gtsam::Matrix33::Identity(3, 3) * pow(1e-4, 2);         // error committed in integrating position from velocities
+        imu_params->integrationCovariance = gtsam::Matrix33::Identity(3, 3) * pow(1e-2, 2);         // error committed in integrating position from velocities
         gtsam::imuBias::ConstantBias prior_imu_bias((gtsam::Vector(6) << 0, 0, 0, 0, 0, 0).finished());
         ;// assume zero initial bias
 

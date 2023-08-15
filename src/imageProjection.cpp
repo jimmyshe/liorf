@@ -181,21 +181,14 @@ public:
     }
 
     void cloudHandler(const sensor_msgs::msg::PointCloud2::SharedPtr laserCloudMsg) {
-
-        auto raw_cloud_opt = cachedReturn(laserCloudMsg);
-
-        if (not raw_cloud_opt.has_value()) {
-            return;
-        }
-
-        pcl::PointCloud<PointXYZIRT>::Ptr raw_laser = ConvertPointCloud(raw_cloud_opt.value());
+        pcl::PointCloud<PointXYZIRT>::Ptr raw_laser = ConvertPointCloud(*laserCloudMsg);
 
         if (raw_laser->empty()) {
             RCLCPP_WARN(get_logger(), "cloudHandler: empty cloud");
             return;
         }
 
-        int64_t laser_time = stamp2NanoSec(raw_cloud_opt.value().header.stamp);
+        int64_t laser_time = stamp2NanoSec(laserCloudMsg->header.stamp);
         int64_t laser_end_time = laser_time + int64_t(raw_laser->points.back().time * 1e9);
         constexpr int64_t epsilon_t = std::chrono::duration_cast<std::chrono::nanoseconds>(10ms).count();
 
@@ -319,7 +312,6 @@ public:
     pcl::PointCloud<PointXYZIRT>::Ptr ConvertPointCloud(const sensor_msgs::msg::PointCloud2 &laserCloudMsg) {
 
         try {
-            // cache point cloud
             auto lidar2base = tf_buffer_->lookupTransform(laserCloudMsg.header.frame_id, baselinkFrame, tf2::TimePointZero);// if the tf is not static, we should look at the frame time
             sensor_msgs::msg::PointCloud2 cloudAtBase;
             tf2::doTransform(laserCloudMsg, cloudAtBase, lidar2base);

@@ -1413,7 +1413,7 @@ public:
         }
 
         gtsam::Vector Vector3(3);
-        Vector3 << max(noise_x, 1.0f), max(noise_y, 1.0f), max(noise_z, 1.0f);
+        Vector3 << max(noise_x, gpsCovThreshold), max(noise_y, gpsCovThreshold), max(noise_z, gpsCovThreshold);
         noiseModel::Diagonal::shared_ptr gps_noise = noiseModel::Diagonal::Variances(Vector3);
         gtsam::GPSFactor gps_factor(cloudKeyPoses3D->size(), // the latest key
                                     gtsam::Point3(gps_x, gps_y, gps_z),
@@ -1705,7 +1705,8 @@ int main(int argc, char **argv) {
     rclcpp::init(argc, argv);
     auto options = rclcpp::NodeOptions();
     auto node = std::make_shared<mapOptimization>(options);
-
+    rclcpp::executors::MultiThreadedExecutor e;
+    e.add_node(node);
 
     std::thread loopthread([node]() {
         node->loopClosureThread();
@@ -1714,7 +1715,7 @@ int main(int argc, char **argv) {
         node->visualizeGlobalMapThread();
     });
 
-    rclcpp::spin(node);
+    e.spin();
 
 
     loopthread.join();
