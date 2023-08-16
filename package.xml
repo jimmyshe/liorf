@@ -52,6 +52,8 @@
     <exec_depend>GTSAM</exec_depend>
     <exec_depend>Eigen</exec_depend>
 
+    <build_depend>sophus</build_depend>
+
     <member_of_group>rosidl_interface_packages</member_of_group>
 
     <test_depend>ament_lint_auto</test_depend>

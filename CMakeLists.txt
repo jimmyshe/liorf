@@ -8,6 +8,17 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_auto REQUIRED)
 ament_auto_find_build_dependencies()
 
+
+# ccache setup
+if(USE_CCACHE)
+    find_program(CCACHE_PATH ccache)
+    if(CCACHE_PATH)
+        set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE ccache)
+        set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ccache)
+        message(STATUS "Using ccache: ${CCACHE_PATH}")
+    endif()
+endif()
+
 find_package(OpenMP REQUIRED)
 find_package(PCL REQUIRED QUIET)
 find_package(OpenCV REQUIRED QUIET)
@@ -26,6 +37,10 @@ rosidl_generate_interfaces(${PROJECT_NAME}
         std_msgs
         sensor_msgs
 )
+
+add_subdirectory(kiss_icp)
+
+
 
 
 # build common library
@@ -76,6 +91,9 @@ target_link_libraries(${PROJECT_NAME}_mapOptmization
         ${GeographicLib_LIBRARIES}
         gtsam
         scancontext)
+
+ament_auto_add_executable(kiss_icp_odom kiss_icp_odom/OdometryServer.cpp kiss_icp_odom/OdometryServerNode.cpp)
+target_link_libraries(kiss_icp_odom kiss_icp::pipeline gtsam ${GeographicLib_LIBRARIES})
 
 
 ament_auto_package(INSTALL_TO_SHARE
