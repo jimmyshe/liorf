@@ -30,6 +30,7 @@ public:
     }
 
     void put_in(int64_t time, const MessageConstPtr &msg_ptr) {
+        assert(msg_ptr != nullptr);
         message_queue_.emplace(time, msg_ptr);
 
         // make sure the queue size is not too large
@@ -55,7 +56,7 @@ public:
 
     MessagePtrOption get_msg_cloest(int64_t time, std::chrono::duration<double> tolerance) const {
         if (message_queue_.empty()) {
-            return {};
+            return std::nullopt;
         }
         auto lower_itr = message_queue_.lower_bound(time);
         if (lower_itr != message_queue_.begin()) {
@@ -64,17 +65,20 @@ public:
             auto before_diff = std::abs(time - before_itr->first);
             auto after_diff = std::abs(time - lower_itr->first);
 
+            MessageConstPtr r = before_itr->second;
+            assert(r != nullptr);
+
             if (before_diff < after_diff) {
                 if (before_diff < tolerance_in_ns) {
-                    return before_itr->second;
+                    return r;
                 }
             } else {
                 if (after_diff < tolerance_in_ns) {
-                    return lower_itr->second;
+                    return r;
                 }
             }
         }
-        return {};
+        return std::nullopt;
     }
 
 

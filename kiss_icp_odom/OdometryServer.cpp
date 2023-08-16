@@ -77,7 +77,7 @@ namespace kiss_icp_ros {
     using utils::PointCloud2ToEigen;
 
     OdometryServer::OdometryServer(const rclcpp::NodeOptions &options)
-        : rclcpp::Node("odometry_node", options), gps_buffer_(100), cloud_buffer_(100) {
+        : rclcpp::Node("odometry_node", options), gps_buffer_(100), cloud_buffer_(10) {
         child_frame_ = declare_parameter<std::string>("child_frame", child_frame_);
         odom_frame_ = declare_parameter<std::string>("odom_frame", odom_frame_);
         publish_odom_tf_ = declare_parameter<bool>("publish_odom_tf", publish_odom_tf_);
@@ -92,6 +92,19 @@ namespace kiss_icp_ros {
             RCLCPP_WARN(get_logger(), "[WARNING] max_range is smaller than min_range, settng min_range to 0.0");
             config_.min_range = 0.0;
         }
+
+        gps_config_.lat = declare_parameter<double>("lat", 29.605333);
+        gps_config_.lon = declare_parameter<double>("lon", 106.307656);
+        gps_config_.alt = declare_parameter<double>("alt", 250);
+        auto variance_x = declare_parameter<double>("variance_x", 2.0);
+        auto variance_y = declare_parameter<double>("variance_y", 2.0);
+        auto variance_z = declare_parameter<double>("variance_z", 1e8);
+
+        gps_config_.noise = gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(3) << variance_x, variance_y, variance_z).finished());
+
+
+        gps_trans_.Reset(gps_config_.lat, gps_config_.lon, gps_config_.alt);
+
 
         // Construct the main KISS-ICP odometry node
         adaptive_threshold_ = std::make_unique<kiss_icp::AdaptiveThreshold>(config_.initial_threshold, config_.min_motion_th, config_.max_range);
@@ -134,21 +147,30 @@ namespace kiss_icp_ros {
 
 
         map_pub_timer_ = create_wall_timer(1s, [this]() {
-            kiss_icp::VoxelHashMap map(config_.voxel_size, config_.max_range, config_.max_points_per_voxel);
-
-
-            {
-                std::scoped_lock lock(cloud_map_mutex_, isam_mutex_);
-                for (const auto &[id, cloud]: cloud_map_) {
-                    map.Update(cloud, gtsamPose3toSouphusSE3(isam_poses.at(id)));
-                }
-            }
-
-            // Publish the map
-            std_msgs::msg::Header local_map_header;
-            local_map_header.frame_id = odom_frame_;
-            local_map_header.stamp = this->now();
-            map_publisher_->publish(std::move(EigenToPointCloud2(map.Pointcloud(), local_map_header)));
+            //fixme: speed bottleneck
+//            decltype(cloud_map_) cloud_map_copy;
+//            decltype(isam_poses_) isam_poses_copy;
+//            {
+//                std::scoped_lock lock(cloud_map_mutex_, isam_mutex_);
+//                cloud_map_copy = cloud_map_;
+//                isam_poses_copy = isam_poses_;
+//            }
+//
+//
+//            kiss_icp::VoxelHashMap map(config_.voxel_size, 500, config_.max_points_per_voxel);
+//
+//            for (const auto &[id, cloud]: cloud_map_copy) {
+//                map.Update(cloud, gtsamPose3toSouphusSE3(isam_poses_copy.at(id)));
+//            }
+//
+//
+//
+//
+//            // Publish the map
+//            std_msgs::msg::Header local_map_header;
+//            local_map_header.frame_id = odom_frame_;
+//            local_map_header.stamp = this->now();
+//            map_publisher_->publish(std::move(EigenToPointCloud2(map.Pointcloud(), local_map_header)));
         });
 
 
@@ -160,7 +182,9 @@ namespace kiss_icp_ros {
         //give the initial pose
         gtsam::NonlinearFactorGraph gtSAMgraph;
         gtsam::Values initialEstimate;
-        gtsam::noiseModel::Diagonal::shared_ptr priorNoise = gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(6) << M_2_PI * M_2_PI, M_2_PI * M_2_PI, M_2_PI * M_2_PI, 1e8, 1e8, 1e8).finished());// rad*rad, meter*meter
+        const double approx_level_variance = std::pow(M_PI / 2.0, 2);
+        const double unknown_direction_variance = std::pow(M_PI, 2);
+        gtsam::noiseModel::Diagonal::shared_ptr priorNoise = gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(6) << approx_level_variance, approx_level_variance, unknown_direction_variance, 1e8, 1e8, 1e8).finished());// rad*rad, meter*meter
         gtSAMgraph.add(gtsam::PriorFactor<gtsam::Pose3>(0, gtsam::Pose3::Identity(), priorNoise));
         initialEstimate.insert(0, gtsam::Pose3::Identity());
         isam->update(gtSAMgraph, initialEstimate);
@@ -205,11 +229,11 @@ namespace kiss_icp_ros {
         // Compute initial_guess for ICP
         isam_mutex_.lock();
         const auto prediction = GetPredictionModel(lidar_frame_id);
-        const auto last_pose = isam_poses.contains(lidar_frame_id - 1) ? gtsamPose3toSouphusSE3(isam_poses.at(lidar_frame_id - 1)) : Sophus::SE3d();
+        const auto last_pose = isam_poses_.contains(lidar_frame_id - 1) ? gtsamPose3toSouphusSE3(isam_poses_.at(lidar_frame_id - 1)) : Sophus::SE3d();
         const auto initial_guess = last_pose * prediction;
         kiss_icp::VoxelHashMap local_map(config_.voxel_size, config_.max_range, config_.max_points_per_voxel);
         for (const auto &cloud_with_id: cloud_buffer_) {
-            local_map.Update(cloud_with_id.points, gtsamPose3toSouphusSE3(isam_poses.at(cloud_with_id.id)));
+            local_map.Update(cloud_with_id.points, gtsamPose3toSouphusSE3(isam_poses_.at(cloud_with_id.id)));
         }
         isam_mutex_.unlock();
 
@@ -246,10 +270,9 @@ namespace kiss_icp_ros {
 
 
         auto add_gps_factor = [this, &gtSAMgraph](Eigen::Vector3d gps) {
-            gtsam::noiseModel::Diagonal::shared_ptr gps_noise = gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(3) << 2.0, 2.0, 2.0).finished());
             gtsam::GPSFactor gps_factor(lidar_frame_id,// the latest key
                                         gtsam::Point3(gps.x(), gps.y(), gps.z()),
-                                        gps_noise);
+                                        gps_config_.noise);
             gtSAMgraph.add(gps_factor);
             RCLCPP_INFO_STREAM(get_logger(), "add gps constrain for " << lidar_frame_id << "  " << gps.transpose());
         };
@@ -260,12 +283,18 @@ namespace kiss_icp_ros {
             std::lock_guard lock(gps_buffer_mutex_);
             auto gps_here_opt = gps_buffer_.get_msg_cloest(time, 10ms);
             if (gps_here_opt.has_value()) {
-                const auto &current_gps = *gps_here_opt.value();
+                RCLCPP_INFO_STREAM(get_logger(), "has ");
+                const auto current_gps_ptr = gps_here_opt.value();
+                RCLCPP_INFO_STREAM(get_logger(), current_gps_ptr.get());
+
+                const auto current_gps = *current_gps_ptr;
                 if (last_gps == std::nullopt) {
                     last_gps = current_gps;
                     add_gps_factor(current_gps);
                 } else {
-                    if ((last_gps.value() - current_gps).norm() > 5.0) {
+                    double norm = (last_gps.value() - current_gps).norm();
+                    RCLCPP_INFO_STREAM(get_logger(), "gps norm " << norm);
+                    if (norm > 5.0) {
                         last_gps = current_gps;
                         add_gps_factor(current_gps);
                     }
@@ -282,7 +311,7 @@ namespace kiss_icp_ros {
         {
             std::lock_guard lock(isam_mutex_);
             for (const auto &key: estimate.keys()) {
-                isam_poses[key] = estimate.at<gtsam::Pose3>(key);
+                isam_poses_[key] = estimate.at<gtsam::Pose3>(key);
             }
         }
 
@@ -361,15 +390,6 @@ namespace kiss_icp_ros {
             return;
         }
 
-
-
-
-        static GeographicLib::LocalCartesian gps_trans_;
-        static bool first_gps = false;
-        if (!first_gps) {
-            first_gps = true;
-            gps_trans_.Reset(gpsMsg->latitude, gpsMsg->longitude, gpsMsg->altitude);//todo: set as a parameter
-        }
         Eigen::Vector3d trans_local_;
         gps_trans_.Forward(gpsMsg->latitude, gpsMsg->longitude, gpsMsg->altitude, trans_local_[0], trans_local_[1], trans_local_[2]);
 
