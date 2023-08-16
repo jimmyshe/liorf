@@ -93,12 +93,17 @@ namespace kiss_icp_ros {
             config_.min_range = 0.0;
         }
 
-        gps_config_.lat = declare_parameter<double>("lat", 29.605333);
-        gps_config_.lon = declare_parameter<double>("lon", 106.307656);
-        gps_config_.alt = declare_parameter<double>("alt", 250);
+        //gps_config_.lat = declare_parameter<double>("lat", 29.605333);
+        //gps_config_.lon = declare_parameter<double>("lon", 106.307656);
+        //gps_config_.alt = declare_parameter<double>("alt", 250);
+        gps_config_.lat = declare_parameter<double>("lat", -22.98668472641165);
+        gps_config_.lon = declare_parameter<double>("lon", -43.20249564143176);
+        gps_config_.alt = declare_parameter<double>("alt", 0);
+
+
         auto variance_x = declare_parameter<double>("variance_x", 2.0);
         auto variance_y = declare_parameter<double>("variance_y", 2.0);
-        auto variance_z = declare_parameter<double>("variance_z", 1e8);
+        auto variance_z = declare_parameter<double>("variance_z", 10.0);
 
         gps_config_.noise = gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(3) << variance_x, variance_y, variance_z).finished());
 
