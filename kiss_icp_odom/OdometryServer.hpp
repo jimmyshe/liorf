@@ -104,6 +104,7 @@ namespace kiss_icp_ros {
         //isam
         std::unique_ptr<gtsam::ISAM2> isam;
 
+        std::mutex isam_mutex_;
         std::map<size_t, gtsam::Pose3> isam_poses;
 
         //gps q
@@ -114,6 +115,9 @@ namespace kiss_icp_ros {
         //recent cloud buffer
         std::mutex cloud_buffer_mutex_;
         boost::circular_buffer<CloudWithId> cloud_buffer_;
+
+        std::mutex cloud_map_mutex_;
+        std::map<size_t, std::vector<Eigen::Vector3d>> cloud_map_;
 
 
         /// Ros node stuff
@@ -133,20 +137,26 @@ namespace kiss_icp_ros {
 
         /// Data publishers.
         rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_publisher_;
-        rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr frame_publisher_;
-        rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr kpoints_publisher_;
+//        rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr frame_publisher_;
+//        rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr kpoints_publisher_;
+        rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr local_map_publisher_;
         rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_publisher_;
+
+
+        /*!
+         * @brief timer
+         */
+        rclcpp::TimerBase::SharedPtr map_pub_timer_;
 
         /// Path publisher
         nav_msgs::msg::Path path_msg_;
         rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr traj_publisher_;
         rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr gtsam_path_publisher_;
 
+
         /// KISS-ICP
         kiss_icp::pipeline::KISSConfig config_;
         // KISS-ICP pipeline modules
-        std::vector<Sophus::SE3d> poses_;
-        std::unique_ptr<kiss_icp::VoxelHashMap> local_map_;
         std::unique_ptr<kiss_icp::AdaptiveThreshold> adaptive_threshold_;
         /// Global/map coordinate frame.
         std::string odom_frame_{"odom"};

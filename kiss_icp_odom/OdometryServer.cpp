@@ -94,7 +94,6 @@ namespace kiss_icp_ros {
         }
 
         // Construct the main KISS-ICP odometry node
-        local_map_ = std::make_unique<kiss_icp::VoxelHashMap>(config_.voxel_size, config_.max_range, config_.max_points_per_voxel);
         adaptive_threshold_ = std::make_unique<kiss_icp::AdaptiveThreshold>(config_.initial_threshold, config_.min_motion_th, config_.max_range);
 
         // Initialize subscribers
@@ -112,10 +111,14 @@ namespace kiss_icp_ros {
 
         // Initialize publishers
         rclcpp::QoS qos(rclcpp::KeepLast{queue_size_});
+
+        // TransientLocal qos
+        rclcpp::QoS map_qos(rclcpp::KeepLast{1});
+        map_qos.transient_local();
+
         odom_publisher_ = create_publisher<nav_msgs::msg::Odometry>("odometry", qos);
-        frame_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>("frame", qos);
-        kpoints_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>("keypoints", qos);
-        map_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>("local_map", qos);
+        map_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>("map", map_qos);
+        local_map_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>("local_map", qos);
 
         // Initialize the transform broadcaster
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
@@ -128,6 +131,25 @@ namespace kiss_icp_ros {
         traj_publisher_ = create_publisher<nav_msgs::msg::Path>("trajectory", qos);
 
         gtsam_path_publisher_ = create_publisher<nav_msgs::msg::Path>("gtsam_trajectory", qos);
+
+
+        map_pub_timer_ = create_wall_timer(1s, [this]() {
+            kiss_icp::VoxelHashMap map(config_.voxel_size, config_.max_range, config_.max_points_per_voxel);
+
+
+            {
+                std::scoped_lock lock(cloud_map_mutex_, isam_mutex_);
+                for (const auto &[id, cloud]: cloud_map_) {
+                    map.Update(cloud, gtsamPose3toSouphusSE3(isam_poses.at(id)));
+                }
+            }
+
+            // Publish the map
+            std_msgs::msg::Header local_map_header;
+            local_map_header.frame_id = odom_frame_;
+            local_map_header.stamp = this->now();
+            map_publisher_->publish(std::move(EigenToPointCloud2(map.Pointcloud(), local_map_header)));
+        });
 
 
         gtsam::ISAM2Params parameters;
@@ -151,14 +173,10 @@ namespace kiss_icp_ros {
     void OdometryServer::RegisterFrame(const sensor_msgs::msg::PointCloud2::ConstSharedPtr &msg) {
         static size_t lidar_frame_id = 0;
         int64_t time = rclcpp::Time(msg->header.stamp).nanoseconds();
-
-
         sensor_msgs::msg::PointCloud2::SharedPtr msg_at_base(new sensor_msgs::msg::PointCloud2);
-        *msg_at_base = *msg;
         try {
             auto lidar2base = tf_buffer_->lookupTransform(msg->header.frame_id, child_frame_, tf2::TimePointZero);// if the tf is not static, we should look at the frame time
-            sensor_msgs::msg::PointCloud2 cloudAtBase;
-            tf2::doTransform(*msg_at_base, cloudAtBase, lidar2base);
+            tf2::doTransform(*msg, *msg_at_base, lidar2base);
         } catch (tf2::TransformException &ex) {
             RCLCPP_ERROR(this->get_logger(), "%s 2 %s tf is not available %s", msg->header.frame_id.c_str(), child_frame_.c_str(), ex.what());
             return;
@@ -185,32 +203,31 @@ namespace kiss_icp_ros {
         const double sigma = GetAdaptiveThreshold(lidar_frame_id);
 
         // Compute initial_guess for ICP
+        isam_mutex_.lock();
         const auto prediction = GetPredictionModel(lidar_frame_id);
         const auto last_pose = isam_poses.contains(lidar_frame_id - 1) ? gtsamPose3toSouphusSE3(isam_poses.at(lidar_frame_id - 1)) : Sophus::SE3d();
         const auto initial_guess = last_pose * prediction;
-
         kiss_icp::VoxelHashMap local_map(config_.voxel_size, config_.max_range, config_.max_points_per_voxel);
         for (const auto &cloud_with_id: cloud_buffer_) {
-            local_map.Update(cloud_with_id.points, gtsamPose3toSouphusSE3(  isam_poses.at(cloud_with_id.id)));
+            local_map.Update(cloud_with_id.points, gtsamPose3toSouphusSE3(isam_poses.at(cloud_with_id.id)));
         }
-
+        isam_mutex_.unlock();
 
 
         // Run icp
         const Sophus::SE3d pose = kiss_icp::RegisterFrame(source,       //
-                                                          local_map,  //
+                                                          local_map,    //
                                                           initial_guess,//
                                                           3.0 * sigma,  //
                                                           sigma / 3.0);
         const auto model_deviation = initial_guess.inverse() * pose;
         adaptive_threshold_->UpdateModelDeviation(model_deviation);
-//        local_map_->Update(frame_downsample, pose);
-
-
         cloud_buffer_.push_back({lidar_frame_id, frame_downsample});
+        {
+            std::lock_guard lock(cloud_map_mutex_);
+            cloud_map_[lidar_frame_id] = frame_downsample;
+        }
 
-
-//        poses_.push_back(pose);
 
         static std::optional<gtsam::Pose3> prev_lidar_optimized_pose{};
 
@@ -262,8 +279,11 @@ namespace kiss_icp_ros {
 
 
         // store the latest optimized pose
-        for (const auto &key: estimate.keys()) {
-            isam_poses[key] = estimate.at<gtsam::Pose3>(key);
+        {
+            std::lock_guard lock(isam_mutex_);
+            for (const auto &key: estimate.keys()) {
+                isam_poses[key] = estimate.at<gtsam::Pose3>(key);
+            }
         }
 
 
@@ -299,18 +319,18 @@ namespace kiss_icp_ros {
         }
 
         // publish trajectory msg
-//        geometry_msgs::msg::PoseStamped pose_msg;
-//        pose_msg.pose.orientation.x = q_current.x();
-//        pose_msg.pose.orientation.y = q_current.y();
-//        pose_msg.pose.orientation.z = q_current.z();
-//        pose_msg.pose.orientation.w = q_current.w();
-//        pose_msg.pose.position.x = t_current.x();
-//        pose_msg.pose.position.y = t_current.y();
-//        pose_msg.pose.position.z = t_current.z();
-//        pose_msg.header.stamp = msg->header.stamp;
-//        pose_msg.header.frame_id = odom_frame_;
-//        path_msg_.poses.push_back(pose_msg);
-//        traj_publisher_->publish(path_msg_);
+        //        geometry_msgs::msg::PoseStamped pose_msg;
+        //        pose_msg.pose.orientation.x = q_current.x();
+        //        pose_msg.pose.orientation.y = q_current.y();
+        //        pose_msg.pose.orientation.z = q_current.z();
+        //        pose_msg.pose.orientation.w = q_current.w();
+        //        pose_msg.pose.position.x = t_current.x();
+        //        pose_msg.pose.position.y = t_current.y();
+        //        pose_msg.pose.position.z = t_current.z();
+        //        pose_msg.header.stamp = msg->header.stamp;
+        //        pose_msg.header.frame_id = odom_frame_;
+        //        path_msg_.poses.push_back(pose_msg);
+        //        traj_publisher_->publish(path_msg_);
         //
         //        // publish odometry msg
         //        auto odom_msg = std::make_unique<nav_msgs::msg::Odometry>();
@@ -328,7 +348,7 @@ namespace kiss_icp_ros {
         // Map is referenced to the odometry_frame
         auto local_map_header = msg->header;
         local_map_header.frame_id = odom_frame_;
-        map_publisher_->publish(std::move(EigenToPointCloud2(local_map.Pointcloud(), local_map_header)));
+        local_map_publisher_->publish(std::move(EigenToPointCloud2(local_map.Pointcloud(), local_map_header)));
     }
 
     void OdometryServer::gpsHandler(const sensor_msgs::msg::NavSatFix::ConstSharedPtr &gpsMsg) {
