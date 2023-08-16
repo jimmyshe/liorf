@@ -43,7 +43,16 @@
 #include <GeographicLib/LocalCartesian.hpp>
 #include <boost/circular_buffer.hpp>
 #include <gtsam/geometry/Pose3.h>
+#include <visualization_msgs/msg/marker_array.hpp>
+
 namespace kiss_icp_ros {
+
+    struct KeyFrameInfo{
+        size_t id;
+        int64_t timestamp;
+        std::vector<Eigen::Vector3d> points;
+        std::optional<Eigen::Vector3d> gps;
+    };
 
 
     struct CloudWithId {
@@ -120,12 +129,8 @@ namespace kiss_icp_ros {
         MsgBuffer<Eigen::Vector3d> gps_buffer_;
 
 
-        //recent cloud buffer
-        std::mutex cloud_buffer_mutex_;
-        boost::circular_buffer<CloudWithId> cloud_buffer_;
-
-        std::mutex cloud_map_mutex_;
-        std::map<size_t, std::vector<Eigen::Vector3d>> cloud_map_;
+        std::mutex key_frames__mutex_;
+        std::vector<KeyFrameInfo> key_frames_;
 
 
         /// Ros node stuff
@@ -145,10 +150,9 @@ namespace kiss_icp_ros {
 
         /// Data publishers.
         rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_publisher_;
-//        rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr frame_publisher_;
-//        rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr kpoints_publisher_;
         rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr local_map_publisher_;
         rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_publisher_;
+        rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher_;
 
 
         /*!

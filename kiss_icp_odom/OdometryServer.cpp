@@ -77,7 +77,7 @@ namespace kiss_icp_ros {
     using utils::PointCloud2ToEigen;
 
     OdometryServer::OdometryServer(const rclcpp::NodeOptions &options)
-        : rclcpp::Node("odometry_node", options), gps_buffer_(100), cloud_buffer_(10) {
+        : rclcpp::Node("odometry_node", options), gps_buffer_(100) {
         child_frame_ = declare_parameter<std::string>("child_frame", child_frame_);
         odom_frame_ = declare_parameter<std::string>("odom_frame", odom_frame_);
         publish_odom_tf_ = declare_parameter<bool>("publish_odom_tf", publish_odom_tf_);
@@ -110,15 +110,30 @@ namespace kiss_icp_ros {
         adaptive_threshold_ = std::make_unique<kiss_icp::AdaptiveThreshold>(config_.initial_threshold, config_.min_motion_th, config_.max_range);
 
         // Initialize subscribers
+
+        auto lidar_cb_group =
+                create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        auto gps_cb_group =
+                create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+
+        auto lidarOpt = rclcpp::SubscriptionOptions();
+        lidarOpt.callback_group = lidar_cb_group;
+        auto gpsOpt = rclcpp::SubscriptionOptions();
+        gpsOpt.callback_group = gps_cb_group;
+
+
         pointcloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
                 "pointcloud_topic", rclcpp::SensorDataQoS(),
-                std::bind(&OdometryServer::RegisterFrame, this, std::placeholders::_1));
+                std::bind(&OdometryServer::RegisterFrame, this, std::placeholders::_1),
+                lidarOpt);
         RCLCPP_INFO(get_logger(), "Subscribed to pointcloud_topic %s", pointcloud_sub_->get_topic_name());
 
 
         gps_sub_ = create_subscription<sensor_msgs::msg::NavSatFix>(
                 "fix", rclcpp::SensorDataQoS(),
-                std::bind(&OdometryServer::gpsHandler, this, std::placeholders::_1));
+                std::bind(&OdometryServer::gpsHandler, this, std::placeholders::_1),
+                gpsOpt);
         RCLCPP_INFO(get_logger(), "Subscribed to gps %s", gps_sub_->get_topic_name());
 
 
@@ -132,6 +147,7 @@ namespace kiss_icp_ros {
         odom_publisher_ = create_publisher<nav_msgs::msg::Odometry>("odometry", qos);
         map_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>("map", map_qos);
         local_map_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>("local_map", qos);
+        marker_publisher_ = create_publisher<visualization_msgs::msg::MarkerArray>("markers", qos);
 
         // Initialize the transform broadcaster
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
@@ -147,30 +163,64 @@ namespace kiss_icp_ros {
 
 
         map_pub_timer_ = create_wall_timer(1s, [this]() {
-            //fixme: speed bottleneck
-//            decltype(cloud_map_) cloud_map_copy;
-//            decltype(isam_poses_) isam_poses_copy;
-//            {
-//                std::scoped_lock lock(cloud_map_mutex_, isam_mutex_);
-//                cloud_map_copy = cloud_map_;
-//                isam_poses_copy = isam_poses_;
-//            }
-//
-//
-//            kiss_icp::VoxelHashMap map(config_.voxel_size, 500, config_.max_points_per_voxel);
-//
-//            for (const auto &[id, cloud]: cloud_map_copy) {
-//                map.Update(cloud, gtsamPose3toSouphusSE3(isam_poses_copy.at(id)));
-//            }
-//
-//
-//
-//
-//            // Publish the map
-//            std_msgs::msg::Header local_map_header;
-//            local_map_header.frame_id = odom_frame_;
-//            local_map_header.stamp = this->now();
-//            map_publisher_->publish(std::move(EigenToPointCloud2(map.Pointcloud(), local_map_header)));
+            //            RCLCPP_INFO_STREAM(get_logger(), "map_pub_timer_");
+            decltype(key_frames_) key_frames_copy;
+            decltype(isam_poses_) isam_poses_copy;
+            {
+                std::scoped_lock lock(key_frames__mutex_, isam_mutex_);
+                key_frames_copy = key_frames_;
+                isam_poses_copy = isam_poses_;
+            }
+
+            visualization_msgs::msg::MarkerArray marker_array;
+            visualization_msgs::msg::Marker delete_all;
+            delete_all.action = visualization_msgs::msg::Marker::DELETEALL;
+            marker_array.markers.push_back(delete_all);
+
+
+            kiss_icp::VoxelHashMap map(config_.voxel_size, 500, config_.max_points_per_voxel);
+
+            std_msgs::msg::Header header;
+            header.frame_id = odom_frame_;
+            header.stamp = this->now();
+
+
+            //
+            //
+            size_t maker_id = 0;
+            for (const auto &key_frame: key_frames_copy) {
+                auto opt_pose = isam_poses_copy.at(key_frame.id);
+                map.Update(key_frame.points, gtsamPose3toSouphusSE3(opt_pose));
+
+                // draw gps constrain
+                if (key_frame.gps) {
+                    visualization_msgs::msg::Marker gps_marker;
+                    gps_marker.header = header;
+                    gps_marker.action = visualization_msgs::msg::Marker::ADD;
+                    gps_marker.type = visualization_msgs::msg::Marker::SPHERE;
+                    gps_marker.pose.position.x = key_frame.gps->x();
+                    gps_marker.pose.position.y = key_frame.gps->y();
+                    gps_marker.pose.position.z = key_frame.gps->z();
+                    gps_marker.pose.orientation.w = 1.0;
+                    gps_marker.scale.x = 0.5;
+                    gps_marker.scale.y = 0.5;
+                    gps_marker.scale.z = 0.5;
+                    gps_marker.color.a = 1.0;
+                    gps_marker.color.r = 1.0;
+                    gps_marker.color.g = 0.0;
+                    gps_marker.color.b = 0.0;
+                    gps_marker.id = maker_id;
+                    maker_id++;
+                    marker_array.markers.push_back(gps_marker);
+                }
+            }
+            marker_publisher_->publish(marker_array);
+
+
+            //            // Publish the map
+            std_msgs::msg::Header local_map_header;
+            local_map_header = header;
+            map_publisher_->publish(std::move(EigenToPointCloud2(map.Pointcloud(), local_map_header)));
         });
 
 
@@ -195,8 +245,12 @@ namespace kiss_icp_ros {
 
 
     void OdometryServer::RegisterFrame(const sensor_msgs::msg::PointCloud2::ConstSharedPtr &msg) {
+        RCLCPP_INFO_STREAM(get_logger(), "RegisterFrame");
+
+
+        static boost::circular_buffer<CloudWithId> cloud_buffer_(10);
         static size_t lidar_frame_id = 0;
-        int64_t time = rclcpp::Time(msg->header.stamp).nanoseconds();
+        int64_t lidar_time = rclcpp::Time(msg->header.stamp).nanoseconds();
         sensor_msgs::msg::PointCloud2::SharedPtr msg_at_base(new sensor_msgs::msg::PointCloud2);
         try {
             auto lidar2base = tf_buffer_->lookupTransform(msg->header.frame_id, child_frame_, tf2::TimePointZero);// if the tf is not static, we should look at the frame time
@@ -247,13 +301,7 @@ namespace kiss_icp_ros {
         const auto model_deviation = initial_guess.inverse() * pose;
         adaptive_threshold_->UpdateModelDeviation(model_deviation);
         cloud_buffer_.push_back({lidar_frame_id, frame_downsample});
-        {
-            std::lock_guard lock(cloud_map_mutex_);
-            cloud_map_[lidar_frame_id] = frame_downsample;
-        }
 
-
-        static std::optional<gtsam::Pose3> prev_lidar_optimized_pose{};
 
         gtsam::noiseModel::Diagonal::shared_ptr odometryNoise = gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(6) << 1e-4, 1e-4, 1e-4, 1e-2, 1e-2, 1e-2).finished());
         gtsam::Pose3 poseFrom = sophusSE3TogtsamPose3(last_pose);
@@ -269,34 +317,58 @@ namespace kiss_icp_ros {
         initialEstimate.insert(lidar_frame_id, poseTo);
 
 
-        auto add_gps_factor = [this, &gtSAMgraph](Eigen::Vector3d gps) {
-            gtsam::GPSFactor gps_factor(lidar_frame_id,// the latest key
-                                        gtsam::Point3(gps.x(), gps.y(), gps.z()),
-                                        gps_config_.noise);
-            gtSAMgraph.add(gps_factor);
-            RCLCPP_INFO_STREAM(get_logger(), "add gps constrain for " << lidar_frame_id << "  " << gps.transpose());
+        std::optional<Eigen::Vector3d> current_gps;
+        {
+            std::lock_guard lock(gps_buffer_mutex_);
+            auto gps_here_opt = gps_buffer_.get_msg_cloest(lidar_time, 100ms);
+            if (gps_here_opt.has_value()) {
+                const auto current_gps_ptr = gps_here_opt.value();
+                current_gps = *current_gps_ptr;
+            }
+        }
+
+        RCLCPP_INFO_STREAM(get_logger(), "find  gps at  " << lidar_time << " : " << current_gps.has_value());
+
+
+        auto add_current_frame_as_key = [&lidar_time, &frame_downsample, &gtSAMgraph, &current_gps, this]() {
+            if (current_gps) {
+
+                gtsam::GPSFactor gps_factor(lidar_frame_id,// the latest key
+                                            gtsam::Point3(current_gps->x(), current_gps->y(), current_gps->z()),
+                                            gps_config_.noise);
+                gtSAMgraph.add(gps_factor);
+                RCLCPP_INFO_STREAM(get_logger(), "add gps constrain for " << lidar_frame_id << "  " << current_gps->transpose());
+            }
+            KeyFrameInfo key_frame;
+            key_frame.gps = current_gps;
+            key_frame.id = lidar_frame_id;
+            key_frame.points = frame_downsample;
+            key_frame.timestamp = lidar_time;
+            key_frames_.push_back(key_frame);
         };
 
 
-        static std::optional<Eigen::Vector3d> last_gps{};
         {
-            std::lock_guard lock(gps_buffer_mutex_);
-            auto gps_here_opt = gps_buffer_.get_msg_cloest(time, 10ms);
-            if (gps_here_opt.has_value()) {
-                RCLCPP_INFO_STREAM(get_logger(), "has ");
-                const auto current_gps_ptr = gps_here_opt.value();
-                RCLCPP_INFO_STREAM(get_logger(), current_gps_ptr.get());
+            std::scoped_lock lock(isam_mutex_, key_frames__mutex_);
+            if (key_frames_.empty()) {
+                add_current_frame_as_key();
+            } else {
+                // check if add key frame is needed
+                const auto &last_key_frame = key_frames_.back();
+                const uint64_t delta_lidar_time_ns = (lidar_time - last_key_frame.timestamp);
+                const auto last_key_frame_opt_pose = isam_poses_.at(last_key_frame.id);
+                gtsam::Pose3 delta_k2c = last_key_frame_opt_pose.between(poseTo);
 
-                const auto current_gps = *current_gps_ptr;
-                if (last_gps == std::nullopt) {
-                    last_gps = current_gps;
-                    add_gps_factor(current_gps);
+                if (delta_lidar_time_ns > 1e9 * 10) {// 10s
+                    add_current_frame_as_key();
+                } else if (delta_k2c.translation().norm() > 5) {// lidar odom move for  5m
+                    add_current_frame_as_key();
                 } else {
-                    double norm = (last_gps.value() - current_gps).norm();
-                    RCLCPP_INFO_STREAM(get_logger(), "gps norm " << norm);
-                    if (norm > 5.0) {
-                        last_gps = current_gps;
-                        add_gps_factor(current_gps);
+                    if (last_key_frame.gps.has_value() and current_gps.has_value()) {
+                        double norm = (last_key_frame.gps.value() - current_gps.value()).norm();
+                        if (norm > 5.0) {// gps move for 5m
+                            add_current_frame_as_key();
+                        }
                     }
                 }
             }
@@ -347,40 +419,16 @@ namespace kiss_icp_ros {
             //                        child_frame_.c_str());
         }
 
-        // publish trajectory msg
-        //        geometry_msgs::msg::PoseStamped pose_msg;
-        //        pose_msg.pose.orientation.x = q_current.x();
-        //        pose_msg.pose.orientation.y = q_current.y();
-        //        pose_msg.pose.orientation.z = q_current.z();
-        //        pose_msg.pose.orientation.w = q_current.w();
-        //        pose_msg.pose.position.x = t_current.x();
-        //        pose_msg.pose.position.y = t_current.y();
-        //        pose_msg.pose.position.z = t_current.z();
-        //        pose_msg.header.stamp = msg->header.stamp;
-        //        pose_msg.header.frame_id = odom_frame_;
-        //        path_msg_.poses.push_back(pose_msg);
-        //        traj_publisher_->publish(path_msg_);
-        //
-        //        // publish odometry msg
-        //        auto odom_msg = std::make_unique<nav_msgs::msg::Odometry>();
-        //        odom_msg->header = pose_msg.header;
-        //        odom_msg->child_frame_id = child_frame_;
-        //        odom_msg->pose.pose = pose_msg.pose;
-        //        odom_publisher_->publish(std::move(odom_msg));
-        //
-        //        // Publish KISS-ICP internal data, just for debugging
-        //        auto frame_header = msg->header;
-        //        frame_header.frame_id = child_frame_;
-        //        frame_publisher_->publish(std::move(EigenToPointCloud2(frame, frame_header)));
-        //        kpoints_publisher_->publish(std::move(EigenToPointCloud2(keypoints, frame_header)));
-        //
-        // Map is referenced to the odometry_frame
+
         auto local_map_header = msg->header;
         local_map_header.frame_id = odom_frame_;
         local_map_publisher_->publish(std::move(EigenToPointCloud2(local_map.Pointcloud(), local_map_header)));
     }
 
     void OdometryServer::gpsHandler(const sensor_msgs::msg::NavSatFix::ConstSharedPtr &gpsMsg) {
+        int64_t time = rclcpp::Time(gpsMsg->header.stamp).nanoseconds();
+
+        RCLCPP_INFO(get_logger(), "gpsHandler %ld", time);
         Eigen::Isometry3d gps2base;
         try {
             auto imu2base = tf_buffer_->lookupTransform(gpsMsg->header.frame_id, child_frame_, tf2::TimePointZero);// if the tf is not static, we should look at the frame time
@@ -401,10 +449,8 @@ namespace kiss_icp_ros {
 
         trans_local_ = gps2base * trans_local_;
 
-        int64_t time = rclcpp::Time(gpsMsg->header.stamp).nanoseconds();
         {
             std::lock_guard<std::mutex> lock(gps_buffer_mutex_);
-
             gps_buffer_.put_in(time, trans_local_);
         }
     }
