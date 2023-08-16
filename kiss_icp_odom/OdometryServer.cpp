@@ -62,7 +62,7 @@
 #include <gtsam/slam/PriorFactor.h>
 
 #include "SophusGtsamConverter.h"
-
+#include <tf2_eigen/tf2_eigen.hpp>
 
 using gtsam::symbol_shorthand::B;// Bias  (ax,ay,az,gx,gy,gz)
 using gtsam::symbol_shorthand::G;// GPS pose
@@ -352,6 +352,17 @@ namespace kiss_icp_ros {
     }
 
     void OdometryServer::gpsHandler(const sensor_msgs::msg::NavSatFix::ConstSharedPtr &gpsMsg) {
+        Eigen::Isometry3d gps2base;
+        try {
+            auto imu2base = tf_buffer_->lookupTransform(gpsMsg->header.frame_id, child_frame_, tf2::TimePointZero);// if the tf is not static, we should look at the frame time
+            gps2base = tf2::transformToEigen(imu2base);
+        } catch (tf2::TransformException &ex) {
+            RCLCPP_ERROR(this->get_logger(), "%s 2 %s tf is not available %s", gpsMsg->header.frame_id.c_str(), child_frame_.c_str(), ex.what());
+            return;
+        }
+
+
+
 
         static GeographicLib::LocalCartesian gps_trans_;
         static bool first_gps = false;
@@ -367,6 +378,8 @@ namespace kiss_icp_ros {
         if (gpsMsg->status.status != 0) {
             return;
         }
+
+        trans_local_ = gps2base * trans_local_;
 
         int64_t time = rclcpp::Time(gpsMsg->header.stamp).nanoseconds();
         {
