@@ -38,22 +38,15 @@ rosidl_generate_interfaces(${PROJECT_NAME}
         sensor_msgs
 )
 
-add_subdirectory(kiss_icp)
+add_subdirectory(lib/kiss_icp)
+add_subdirectory(lib/Scancontext)
 
 
 
-
-# build common library
-add_library(common lib/common_lib.cpp)
-target_include_directories(common PUBLIC lib)
-target_link_libraries(common PUBLIC ${PCL_LIBRARIES})
 
 
 include_directories(include)
 
-
-add_library(scancontext src/Scancontext.cpp)
-target_link_libraries(scancontext PUBLIC ${PCL_LIBRARIES} ${OpenCV_LIBRARIES})
 
 
 
@@ -90,10 +83,10 @@ target_link_libraries(${PROJECT_NAME}_mapOptmization
         ${OpenMP_CXX_FLAGS}
         ${GeographicLib_LIBRARIES}
         gtsam
-        scancontext)
+        scan_context)
 
-ament_auto_add_executable(kiss_icp_odom kiss_icp_odom/OdometryServer.cpp kiss_icp_odom/OdometryServerNode.cpp kiss_icp_odom/KeyFrameManager.cpp)
-target_link_libraries(kiss_icp_odom kiss_icp::pipeline gtsam ${GeographicLib_LIBRARIES})
+ament_auto_add_executable(kiss_icp_odom kiss_icp_odom/OdometryServer.cpp kiss_icp_odom/OdometryServerNode.cpp kiss_icp_odom/KeyFrameManager.cpp kiss_icp_odom/ScLoop.cpp)
+target_link_libraries(kiss_icp_odom kiss_icp::pipeline gtsam ${GeographicLib_LIBRARIES} scan_context)
 
 
 ament_auto_package(INSTALL_TO_SHARE

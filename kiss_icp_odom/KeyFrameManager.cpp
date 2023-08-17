@@ -3,6 +3,8 @@
 //
 
 #include "KeyFrameManager.h"
+#include "marker_color.h"
+
 void kiss_icp_ros::KeyFrameManager::put_in(const kiss_icp_ros::KeyFrameInfo &key_frame_info, const gtsam::Pose3 &pose) {
     std::lock_guard<std::mutex> lock(mutex_);
     key_frames_.push_back(key_frame_info);
@@ -59,25 +61,7 @@ std::vector<visualization_msgs::msg::Marker> kiss_icp_ros::KeyFrameManager::get_
     gps_marker.scale.x = 0.2;
     gps_marker.scale.y = 0.2;
     gps_marker.scale.z = 0.2;
-    gps_marker.color.a = 1.0;// Don't forget to set the alpha!
-    gps_marker.color.r = 0.0;
-    gps_marker.color.g = 1.0;
-    gps_marker.color.b = 0.0;
-
-
-    visualization_msgs::msg::Marker key_frame_marker;
-    key_frame_marker.header = header;
-    key_frame_marker.ns = ns;
-    key_frame_marker.id = 2;
-    key_frame_marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
-    key_frame_marker.action = visualization_msgs::msg::Marker::ADD;
-    key_frame_marker.scale.x = 0.2;
-    key_frame_marker.scale.y = 0.2;
-    key_frame_marker.scale.z = 0.2;
-    key_frame_marker.color.a = 1.0;// Don't forget to set the alpha!
-    key_frame_marker.color.r = 0.0;
-    key_frame_marker.color.g = 0.0;
-    key_frame_marker.color.b = 1.0;
+    gps_marker.color = get_gps_color();
 
 
     visualization_msgs::msg::Marker gps_residual_marker;
@@ -89,10 +73,7 @@ std::vector<visualization_msgs::msg::Marker> kiss_icp_ros::KeyFrameManager::get_
     gps_residual_marker.scale.x = 0.1;
     gps_residual_marker.scale.y = 0.1;
     gps_residual_marker.scale.z = 0.1;
-    gps_residual_marker.color.a = 1.0;// Don't forget to set the alpha!
-    gps_residual_marker.color.r = 1.0;
-    gps_residual_marker.color.g = 0.0;
-    gps_residual_marker.color.b = 0.0;
+    gps_residual_marker.color = get_loop_residual_color();
 
 
     for (const auto &key_frame: key_frames_) {
@@ -103,8 +84,6 @@ std::vector<visualization_msgs::msg::Marker> kiss_icp_ros::KeyFrameManager::get_
             gps_p.z = key_frame.gps.value().z();
 
             gps_marker.points.push_back(gps_p);
-
-
             geometry_msgs::msg::Point gps_residual_p;
             gps_residual_p.x = key_frame.gps.value().x();
             gps_residual_p.y = key_frame.gps.value().y();
@@ -117,14 +96,12 @@ std::vector<visualization_msgs::msg::Marker> kiss_icp_ros::KeyFrameManager::get_
             key_frame_point.y = opt_pose.translation().y();
             key_frame_point.z = opt_pose.translation().z();
             gps_residual_marker.points.push_back(key_frame_point);
-            key_frame_marker.points.push_back(key_frame_point);
         }
     }
     std::vector<visualization_msgs::msg::Marker> markers;
 
     markers.emplace_back(gps_marker);
     markers.emplace_back(gps_residual_marker);
-    markers.emplace_back(key_frame_marker);
 
     return markers;
 }
@@ -136,4 +113,32 @@ std::map<size_t, kiss_icp_ros::PointsWithOrigin> kiss_icp_ros::KeyFrameManager::
         r[key_frame.id] = {pose, key_frame.points};
     }
     return r;
+}
+std::vector<visualization_msgs::msg::Marker> kiss_icp_ros::KeyFrameManager::get_key_markers(std_msgs::msg::Header header, std::string ns) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    visualization_msgs::msg::Marker key_frame_marker;
+    key_frame_marker.header = header;
+    key_frame_marker.ns = ns;
+    key_frame_marker.id = 0;
+    key_frame_marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+    key_frame_marker.action = visualization_msgs::msg::Marker::ADD;
+    key_frame_marker.scale.x = 0.2;
+    key_frame_marker.scale.y = 0.2;
+    key_frame_marker.scale.z = 0.2;
+    key_frame_marker.color = get_key_color();
+
+
+    for (const auto &key_frame: key_frames_) {
+        const auto &opt_pose = key_frame_pose.at(key_frame.id);
+        geometry_msgs::msg::Point key_frame_point;
+        key_frame_point.x = opt_pose.translation().x();
+        key_frame_point.y = opt_pose.translation().y();
+        key_frame_point.z = opt_pose.translation().z();
+        key_frame_marker.points.push_back(key_frame_point);
+    }
+    std::vector<visualization_msgs::msg::Marker> markers;
+    markers.emplace_back(key_frame_marker);
+
+    return markers;
 }

@@ -45,9 +45,8 @@
 #include <gtsam/geometry/Pose3.h>
 #include <visualization_msgs/msg/marker_array.hpp>
 
-
 #include "KeyFrameManager.h"
-
+#include "ScLoop.h"
 namespace kiss_icp_ros {
 
 
@@ -76,6 +75,7 @@ namespace kiss_icp_ros {
 
     private:
         void gpsHandler(const sensor_msgs::msg::NavSatFix::ConstSharedPtr &gpsMsg);
+
 
 
         double GetAdaptiveThreshold(size_t id) {
@@ -172,6 +172,8 @@ namespace kiss_icp_ros {
 
 
         GeographicLib::LocalCartesian gps_trans_;
+
+        ScLoop sc_loop_;
     };
 
 }// namespace kiss_icp_ros

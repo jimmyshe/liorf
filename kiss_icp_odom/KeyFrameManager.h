@@ -11,6 +11,7 @@
 #include <optional>
 #include <ranges>
 #include <visualization_msgs/msg/marker.hpp>
+#include <Scancontext.h>
 
 namespace kiss_icp_ros {
 
@@ -36,7 +37,6 @@ namespace kiss_icp_ros {
 
         void update_key_frame_pose(const std::map<size_t, gtsam::Pose3> &new_poses);
 
-
         double get_distance_to_last_gps(const Eigen::Vector3d &new_gps) const;
 
         double get_distance_to_last_key(const gtsam::Point3 &p) const;
@@ -44,6 +44,9 @@ namespace kiss_icp_ros {
         double get_angle_to_last_key(const gtsam::Rot3 &r) const;
 
         std::vector<visualization_msgs::msg::Marker> get_gps_markers(std_msgs::msg::Header header, std::string ns = "gps") const;
+
+        std::vector<visualization_msgs::msg::Marker> get_key_markers(std_msgs::msg::Header header, std::string ns = "key_frame") const;
+
 
         std::map<size_t,PointsWithOrigin> get_map() const;
 

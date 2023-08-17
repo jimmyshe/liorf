@@ -170,6 +170,13 @@ namespace kiss_icp_ros {
             visualization_msgs::msg::MarkerArray marker_array;
             auto gps_markers = key_frame_manager_.get_gps_markers(header, "gps");
             marker_array.markers.insert(marker_array.markers.end(), gps_markers.begin(), gps_markers.end());
+
+            auto loop_closure_markers = sc_loop_.get_loop_closure_markers(header, "loop_closure");
+            marker_array.markers.insert(marker_array.markers.end(), loop_closure_markers.begin(), loop_closure_markers.end());
+
+            auto key_markers = key_frame_manager_.get_key_markers(header, "key_frame");
+            marker_array.markers.insert(marker_array.markers.end(), key_markers.begin(), key_markers.end());
+
             marker_publisher_->publish(marker_array);
 
             //            // Publish the map
@@ -207,7 +214,7 @@ namespace kiss_icp_ros {
 
 
     void OdometryServer::RegisterFrame(const sensor_msgs::msg::PointCloud2::ConstSharedPtr &msg) {
-        RCLCPP_INFO_STREAM(get_logger(), "RegisterFrame");
+        RCLCPP_DEBUG_STREAM(get_logger(), "RegisterFrame");
 
 
         static boost::circular_buffer<CloudWithId> cloud_buffer_(10);
@@ -288,20 +295,21 @@ namespace kiss_icp_ros {
                 current_gps = *current_gps_ptr;
             }
         }
-        RCLCPP_INFO_STREAM(get_logger(), "find  gps at  " << lidar_time << " : " << current_gps.has_value());
+        RCLCPP_DEBUG_STREAM(get_logger(), "find  gps at  " << lidar_time << " : " << current_gps.has_value());
 
-
-        auto add_current_frame_as_key = [&lidar_time, &frame_downsample, &current_gps, &poseTo, this]() {
+        bool key_frame_added = false;
+        auto add_current_frame_as_key = [&key_frame_added, &lidar_time, &frame_downsample, &current_gps, &poseTo, this]() {
             KeyFrameInfo key_frame;
             key_frame.gps = current_gps;
             key_frame.id = lidar_frame_id;
             key_frame.points = frame_downsample;
             key_frame.timestamp = lidar_time;
             key_frame_manager_.put_in(key_frame, poseTo);
+            key_frame_added = true;
         };
 
-        constexpr double gps_distance_threshold = 5.0;
-        constexpr double lidar_distance_threshold = 5.0;
+        constexpr double gps_distance_threshold = 3.0;
+        constexpr double lidar_distance_threshold = 3.0;
         constexpr double lidar_angle_threshold = M_PI / 180 * 10;// 10 degree
 
         if (current_gps) {// if we have gps, we check if the gps is far enough from last gps in key frames
@@ -322,6 +330,24 @@ namespace kiss_icp_ros {
             }
         }
 
+
+        auto closure_data = sc_loop_.get_all_unused_closure();
+        for (const auto &item: closure_data) {
+
+
+            // giseop, robust kernel for a SC loop
+            constexpr float robustNoiseScore = 0.5;// constant is ok...
+            gtsam::Vector robustNoiseVector6(6);
+            robustNoiseVector6 << robustNoiseScore, robustNoiseScore, robustNoiseScore, robustNoiseScore, robustNoiseScore, robustNoiseScore;
+            gtsam::noiseModel::Base::shared_ptr noiseBetween = gtsam::noiseModel::Robust::Create(
+                    gtsam::noiseModel::mEstimator::Cauchy::Create(1),           // optional: replacing Cauchy by DCS or GemanMcClure, but with a good front-end loop detector, Cauchy is empirically enough.
+                    gtsam::noiseModel::Diagonal::Variances(robustNoiseVector6));// - checked it works. but with robust kernel, map modification may be delayed (i.e,. requires more true-positive loop factors)
+
+            gtsam::Pose3 poseBetween(item.transform.matrix());
+            gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(item.from_id, item.to_id, poseBetween, noiseBetween));
+        }
+
+
         isam->update(gtSAMgraph, initialEstimate);
         gtsam::Values estimate = isam->calculateEstimate();
 
@@ -334,6 +360,12 @@ namespace kiss_icp_ros {
             }
 
             key_frame_manager_.update_key_frame_pose(isam_poses_);
+            sc_loop_.update_key_pose(isam_poses_);
+        }
+
+        // loop closure detection
+        if (key_frame_added) {// 只计算key frame 的 回环
+            sc_loop_.CalculateLoopClosure(lidar_frame_id, frame_downsample);
         }
 
 
@@ -379,7 +411,7 @@ namespace kiss_icp_ros {
     void OdometryServer::gpsHandler(const sensor_msgs::msg::NavSatFix::ConstSharedPtr &gpsMsg) {
         int64_t time = rclcpp::Time(gpsMsg->header.stamp).nanoseconds();
 
-        RCLCPP_INFO(get_logger(), "gpsHandler %ld", time);
+        RCLCPP_DEBUG(get_logger(), "gpsHandler %ld", time);
         Eigen::Isometry3d gps2base;
         try {
             auto imu2base = tf_buffer_->lookupTransform(gpsMsg->header.frame_id, child_frame_, tf2::TimePointZero);// if the tf is not static, we should look at the frame time

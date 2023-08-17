@@ -31,8 +31,9 @@
     <build_depend>PCL</build_depend>
     <build_depend>GTSAM</build_depend>
     <build_depend>Eigen</build_depend>
+    <depend>cv_bridge</depend>
 
-
+    <depend>pcl_conversion</depend>
     <exec_depend>rosidl_default_runtime</exec_depend>
     <exec_depend>rclcpp</exec_depend>
     <exec_depend>rclpy</exec_depend>
