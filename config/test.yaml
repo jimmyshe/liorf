@@ -1,0 +1,5 @@
+odometry_node:
+  ros__parameters:
+    lat: -22.98668472641165
+    lon: -43.20249564143176
+    alt: 0.0

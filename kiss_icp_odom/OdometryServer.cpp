@@ -64,11 +64,6 @@
 #include "SophusGtsamConverter.h"
 #include <tf2_eigen/tf2_eigen.hpp>
 
-using gtsam::symbol_shorthand::B;// Bias  (ax,ay,az,gx,gy,gz)
-using gtsam::symbol_shorthand::G;// GPS pose
-using gtsam::symbol_shorthand::V;// Vel   (xdot,ydot,zdot)
-using gtsam::symbol_shorthand::X;// Pose3 (x,y,z,r,p,y)
-
 using namespace std::chrono_literals;
 namespace kiss_icp_ros {
 
@@ -168,64 +163,26 @@ namespace kiss_icp_ros {
 
 
         map_pub_timer_ = create_wall_timer(1s, [this]() {
-            //            RCLCPP_INFO_STREAM(get_logger(), "map_pub_timer_");
-            decltype(key_frames_) key_frames_copy;
-            decltype(isam_poses_) isam_poses_copy;
-            {
-                std::scoped_lock lock(key_frames__mutex_, isam_mutex_);
-                key_frames_copy = key_frames_;
-                isam_poses_copy = isam_poses_;
-            }
-
-            visualization_msgs::msg::MarkerArray marker_array;
-            visualization_msgs::msg::Marker delete_all;
-            delete_all.action = visualization_msgs::msg::Marker::DELETEALL;
-            marker_array.markers.push_back(delete_all);
-
-
-            kiss_icp::VoxelHashMap map(config_.voxel_size, 500, config_.max_points_per_voxel);
-
             std_msgs::msg::Header header;
             header.frame_id = odom_frame_;
             header.stamp = this->now();
 
-
-            //
-            //
-            size_t maker_id = 0;
-            for (const auto &key_frame: key_frames_copy) {
-                auto opt_pose = isam_poses_copy.at(key_frame.id);
-                map.Update(key_frame.points, gtsamPose3toSouphusSE3(opt_pose));
-
-                // draw gps constrain
-                if (key_frame.gps) {
-                    visualization_msgs::msg::Marker gps_marker;
-                    gps_marker.header = header;
-                    gps_marker.action = visualization_msgs::msg::Marker::ADD;
-                    gps_marker.type = visualization_msgs::msg::Marker::SPHERE;
-                    gps_marker.pose.position.x = key_frame.gps->x();
-                    gps_marker.pose.position.y = key_frame.gps->y();
-                    gps_marker.pose.position.z = key_frame.gps->z();
-                    gps_marker.pose.orientation.w = 1.0;
-                    gps_marker.scale.x = 0.5;
-                    gps_marker.scale.y = 0.5;
-                    gps_marker.scale.z = 0.5;
-                    gps_marker.color.a = 1.0;
-                    gps_marker.color.r = 1.0;
-                    gps_marker.color.g = 0.0;
-                    gps_marker.color.b = 0.0;
-                    gps_marker.id = maker_id;
-                    maker_id++;
-                    marker_array.markers.push_back(gps_marker);
-                }
-            }
+            visualization_msgs::msg::MarkerArray marker_array;
+            auto gps_markers = key_frame_manager_.get_gps_markers(header, "gps");
+            marker_array.markers.insert(marker_array.markers.end(), gps_markers.begin(), gps_markers.end());
             marker_publisher_->publish(marker_array);
 
-
             //            // Publish the map
-            std_msgs::msg::Header local_map_header;
-            local_map_header = header;
-            map_publisher_->publish(std::move(EigenToPointCloud2(map.Pointcloud(), local_map_header)));
+
+            auto map_data = key_frame_manager_.get_map();
+            kiss_icp::VoxelHashMap voxel_map(config_.voxel_size, 1000, config_.max_points_per_voxel);
+            for (const auto &[key, d]: map_data) {
+                voxel_map.Update(d.points, gtsamPose3toSouphusSE3(d.pose));
+            }
+
+
+            //            auto points_in_map = key_frame_manager_.get_map();
+            map_publisher_->publish(EigenToPointCloud2(voxel_map.Pointcloud(), header));
         });
 
 
@@ -331,54 +288,39 @@ namespace kiss_icp_ros {
                 current_gps = *current_gps_ptr;
             }
         }
-
         RCLCPP_INFO_STREAM(get_logger(), "find  gps at  " << lidar_time << " : " << current_gps.has_value());
 
 
-        auto add_current_frame_as_key = [&lidar_time, &frame_downsample, &gtSAMgraph, &current_gps, this]() {
-            if (current_gps) {
-
-                gtsam::GPSFactor gps_factor(lidar_frame_id,// the latest key
-                                            gtsam::Point3(current_gps->x(), current_gps->y(), current_gps->z()),
-                                            gps_config_.noise);
-                gtSAMgraph.add(gps_factor);
-                RCLCPP_INFO_STREAM(get_logger(), "add gps constrain for " << lidar_frame_id << "  " << current_gps->transpose());
-            }
+        auto add_current_frame_as_key = [&lidar_time, &frame_downsample, &current_gps, &poseTo, this]() {
             KeyFrameInfo key_frame;
             key_frame.gps = current_gps;
             key_frame.id = lidar_frame_id;
             key_frame.points = frame_downsample;
             key_frame.timestamp = lidar_time;
-            key_frames_.push_back(key_frame);
+            key_frame_manager_.put_in(key_frame, poseTo);
         };
 
+        constexpr double gps_distance_threshold = 5.0;
+        constexpr double lidar_distance_threshold = 5.0;
+        constexpr double lidar_angle_threshold = M_PI / 180 * 10;// 10 degree
 
-        {
-            std::scoped_lock lock(isam_mutex_, key_frames__mutex_);
-            if (key_frames_.empty()) {
+        if (current_gps) {// if we have gps, we check if the gps is far enough from last gps in key frames
+            if (key_frame_manager_.get_distance_to_last_gps(current_gps.value()) > gps_distance_threshold) {
+                // add gps constrain  // here we share the same condition for adding key frame and adding gps constrains
+                gtsam::GPSFactor gps_factor(lidar_frame_id,// the latest key
+                                            gtsam::Point3(current_gps->x(), current_gps->y(), current_gps->z()),
+                                            gps_config_.noise);
+                gtSAMgraph.add(gps_factor);
+                RCLCPP_INFO_STREAM(get_logger(), "add gps constrain for " << lidar_frame_id << "  " << current_gps->transpose());
                 add_current_frame_as_key();
-            } else {
-                // check if add key frame is needed
-                const auto &last_key_frame = key_frames_.back();
-                const uint64_t delta_lidar_time_ns = (lidar_time - last_key_frame.timestamp);
-                const auto last_key_frame_opt_pose = isam_poses_.at(last_key_frame.id);
-                gtsam::Pose3 delta_k2c = last_key_frame_opt_pose.between(poseTo);
-
-                if (delta_lidar_time_ns > 1e9 * 10) {// 10s
-                    add_current_frame_as_key();
-                } else if (delta_k2c.translation().norm() > 5) {// lidar odom move for  5m
-                    add_current_frame_as_key();
-                } else {
-                    if (last_key_frame.gps.has_value() and current_gps.has_value()) {
-                        double norm = (last_key_frame.gps.value() - current_gps.value()).norm();
-                        if (norm > 5.0) {// gps move for 5m
-                            add_current_frame_as_key();
-                        }
-                    }
-                }
+            }
+        } else {
+            // we check if lidar odometry is moving far enough
+            if (key_frame_manager_.get_distance_to_last_key(poseTo.translation()) > lidar_distance_threshold or
+                key_frame_manager_.get_angle_to_last_key(poseTo.rotation()) > lidar_angle_threshold) {
+                add_current_frame_as_key();
             }
         }
-
 
         isam->update(gtSAMgraph, initialEstimate);
         gtsam::Values estimate = isam->calculateEstimate();
@@ -390,6 +332,8 @@ namespace kiss_icp_ros {
             for (const auto &key: estimate.keys()) {
                 isam_poses_[key] = estimate.at<gtsam::Pose3>(key);
             }
+
+            key_frame_manager_.update_key_frame_pose(isam_poses_);
         }
 
 
@@ -402,10 +346,12 @@ namespace kiss_icp_ros {
         nav_msgs::msg::Path path = gtsamValues2Path(estimate, odom_header);
         gtsam_path_publisher_->publish(path);
 
+        const auto &optimized_current_pose = isam_poses_.at(lidar_frame_id);
+
 
         // Convert from Eigen to ROS types
-        const Eigen::Vector3d t_current = pose.translation();
-        const Eigen::Quaterniond q_current = pose.unit_quaternion();
+        const Eigen::Vector3d t_current = optimized_current_pose.translation();
+        const Eigen::Quaterniond q_current(optimized_current_pose.rotation().matrix());
 
         // Broadcast the tf
         if (publish_odom_tf_) {

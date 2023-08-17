@@ -92,7 +92,7 @@ target_link_libraries(${PROJECT_NAME}_mapOptmization
         gtsam
         scancontext)
 
-ament_auto_add_executable(kiss_icp_odom kiss_icp_odom/OdometryServer.cpp kiss_icp_odom/OdometryServerNode.cpp)
+ament_auto_add_executable(kiss_icp_odom kiss_icp_odom/OdometryServer.cpp kiss_icp_odom/OdometryServerNode.cpp kiss_icp_odom/KeyFrameManager.cpp)
 target_link_libraries(kiss_icp_odom kiss_icp::pipeline gtsam ${GeographicLib_LIBRARIES})
 
 

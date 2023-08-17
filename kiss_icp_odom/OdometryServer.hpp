@@ -45,14 +45,10 @@
 #include <gtsam/geometry/Pose3.h>
 #include <visualization_msgs/msg/marker_array.hpp>
 
-namespace kiss_icp_ros {
 
-    struct KeyFrameInfo{
-        size_t id;
-        int64_t timestamp;
-        std::vector<Eigen::Vector3d> points;
-        std::optional<Eigen::Vector3d> gps;
-    };
+#include "KeyFrameManager.h"
+
+namespace kiss_icp_ros {
 
 
     struct CloudWithId {
@@ -129,9 +125,8 @@ namespace kiss_icp_ros {
         MsgBuffer<Eigen::Vector3d> gps_buffer_;
 
 
-        std::mutex key_frames__mutex_;
-        std::vector<KeyFrameInfo> key_frames_;
 
+        KeyFrameManager key_frame_manager_;
 
         /// Ros node stuff
         size_t queue_size_{1};
