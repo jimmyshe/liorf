@@ -24,7 +24,7 @@ void kiss_icp_ros::ScLoop::CalculateLoopClosure(size_t laser_id, std::vector<Eig
     const auto [related_sc_index, yaw_diff] = sc_manager_.detectLoopClosureID();
 
     if (related_sc_index == -1) {
-        RCLCPP_INFO(rclcpp::get_logger("scloop"), "No loop closure found");
+        RCLCPP_DEBUG(rclcpp::get_logger("scloop"), "No loop closure found");
         return;
     }
     RCLCPP_INFO(rclcpp::get_logger("scloop"), "Loop closure found %d to %d", current_sc_index, related_sc_index);

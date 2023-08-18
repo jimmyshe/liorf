@@ -324,8 +324,9 @@ namespace kiss_icp_ros {
             }
         } else {
             // we check if lidar odometry is moving far enough
-            if (key_frame_manager_.get_distance_to_last_key(poseTo.translation()) > lidar_distance_threshold or
-                key_frame_manager_.get_angle_to_last_key(poseTo.rotation()) > lidar_angle_threshold) {
+            if (key_frame_manager_.get_distance_to_last_key(poseTo.translation()) > lidar_distance_threshold
+//                or key_frame_manager_.get_angle_to_last_key(poseTo.rotation()) > lidar_angle_threshold // 360 degree lidar may not need this
+                ) {
                 add_current_frame_as_key();
             }
         }

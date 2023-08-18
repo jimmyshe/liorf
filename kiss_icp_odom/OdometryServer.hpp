@@ -47,6 +47,10 @@
 
 #include "KeyFrameManager.h"
 #include "ScLoop.h"
+#include <asio/strand.hpp>
+#include <boost/asio.hpp>
+
+
 namespace kiss_icp_ros {
 
 
