@@ -366,7 +366,7 @@ namespace kiss_icp_ros {
 
         // loop closure detection
         if (key_frame_added) {// 只计算key frame 的 回环
-            sc_loop_.CalculateLoopClosure(lidar_frame_id, frame_downsample);
+            //sc_loop_.CalculateLoopClosure(lidar_frame_id, frame_downsample);
         }
 
 
