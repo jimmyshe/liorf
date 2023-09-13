@@ -65,6 +65,7 @@
 #include <cartographer_ros/time_conversion.h>
 #include <tf2_eigen/tf2_eigen.hpp>
 
+
 using namespace std::chrono_literals;
 namespace kiss_icp_ros {
 
@@ -73,7 +74,7 @@ namespace kiss_icp_ros {
     using utils::PointCloud2ToEigen;
 
     OdometryServer::OdometryServer(const rclcpp::NodeOptions &options)
-        : rclcpp::Node("odometry_node", options), gps_buffer_(100) {
+        : rclcpp::Node("odometry_node", options) {
 
         cartographer::common::Duration pose_queue_duration = cartographer::common::FromSeconds(5.0);
         pose_extrapolator_ = std::make_unique<cartographer::mapping::PoseExtrapolator>(1s, 17);// 17 is from cartographer_ros default value
@@ -223,12 +224,12 @@ namespace kiss_icp_ros {
         RCLCPP_DEBUG_STREAM(get_logger(), "RegisterFrame");
 
 
-        static boost::circular_buffer<CloudWithId> cloud_buffer_(10);
-        static size_t lidar_frame_id = 0;
+        static boost::circular_buffer<CloudWithId> cloud_buffer_(100);
+        static size_t lidar_frame_id = 0;// key frame id start from 1
         const rclcpp::Time lidar_time_ros(msg->header.stamp);
         const int64_t lidar_time = lidar_time_ros.nanoseconds();
 
-        const cartographer::common::Time lidar_time_ros_carto = cartographer_ros::FromRos(lidar_time_ros);
+        const cartographer::common::Time lidar_time_carto = cartographer_ros::FromRos(lidar_time_ros);
 
 
         sensor_msgs::msg::PointCloud2::SharedPtr msg_at_base(new sensor_msgs::msg::PointCloud2);
@@ -239,11 +240,13 @@ namespace kiss_icp_ros {
             RCLCPP_ERROR(this->get_logger(), "%s 2 %s tf is not available %s", msg->header.frame_id.c_str(), child_frame_.c_str(), ex.what());
             return;
         }
+
+        const size_t last_lidar_frame_id = lidar_frame_id;
         lidar_frame_id++;
 
-        Sophus::SE3d initial_guess;
+        Sophus::SE3d initial_guess;// extrapolate pose at lidar time as initial guess of icp
         if (pose_extrapolator_->GetLastPoseTime() != cartographer::common::Time::min()) {
-            const auto guess_pose = pose_extrapolator_->ExtrapolatePose(lidar_time_ros_carto);
+            const auto guess_pose = pose_extrapolator_->ExtrapolatePose(lidar_time_carto);
             initial_guess = Sophus::SE3d(guess_pose.rotation(), guess_pose.translation());
         }
 
@@ -262,15 +265,14 @@ namespace kiss_icp_ros {
         const auto frame_downsample = kiss_icp::VoxelDownsample(cropped_frame, config_.voxel_size * 0.5);
         const auto source = kiss_icp::VoxelDownsample(frame_downsample, config_.voxel_size * 1.5);
 
-        // Get motion prediction and adaptive_threshold
-        const double sigma = GetAdaptiveThreshold(lidar_frame_id);
 
         isam_mutex_.lock();
-        // Compute initial_guess for ICP
-        //        const auto prediction = GetPredictionModel(lidar_frame_id);
-        const auto last_pose = isam_poses_.contains(lidar_frame_id - 1) ? gtsamPose3toSouphusSE3(isam_poses_.at(lidar_frame_id - 1)) : Sophus::SE3d();
-        //        const auto initial_guess = last_pose * prediction;
-        //
+        // Get motion prediction and adaptive_threshold
+        double sigma = config_.initial_threshold;
+        if (HasMoved(lidar_frame_id)) {
+            sigma = adaptive_threshold_->ComputeThreshold();
+        }
+        const auto last_pose = isam_poses_.contains(last_lidar_frame_id) ? gtsamPose3toSouphusSE3(isam_poses_.at(last_lidar_frame_id)) : Sophus::SE3d();
         kiss_icp::VoxelHashMap local_map(config_.voxel_size, config_.max_range, config_.max_points_per_voxel);
         for (const auto &cloud_with_id: cloud_buffer_) {
             local_map.Update(cloud_with_id.points, gtsamPose3toSouphusSE3(isam_poses_.at(cloud_with_id.id)));
@@ -279,90 +281,97 @@ namespace kiss_icp_ros {
 
 
         // Run icp
-        const Sophus::SE3d pose = kiss_icp::RegisterFrame(source,       //
-                                                          local_map,    //
-                                                          initial_guess,//
-                                                          3.0 * sigma,  //
-                                                          sigma / 3.0);
-        const auto model_deviation = initial_guess.inverse() * pose;
+        const Sophus::SE3d icp_matched_pose = kiss_icp::RegisterFrame(source,       //
+                                                                      local_map,    //
+                                                                      initial_guess,//
+                                                                      3.0 * sigma,  //
+                                                                      sigma / 3.0);
+        const auto model_deviation = initial_guess.inverse() * icp_matched_pose;
         adaptive_threshold_->UpdateModelDeviation(model_deviation);
         cloud_buffer_.push_back({lidar_frame_id, frame_downsample});
 
-
+        // build gtsam factor map of kiss icp odometry (last frame to current frame)
         gtsam::noiseModel::Diagonal::shared_ptr odometryNoise = gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(6) << 1e-4, 1e-4, 1e-4, 1e-2, 1e-2, 1e-2).finished());
-        gtsam::Pose3 poseFrom = sophusSE3TogtsamPose3(last_pose);
-        gtsam::Pose3 poseTo = sophusSE3TogtsamPose3(pose);
-        gtsam::Pose3 delta = poseFrom.between(poseTo);
-
-
+        const gtsam::Pose3 last_pose_gtsam = sophusSE3TogtsamPose3(last_pose);
+        const gtsam::Pose3 icp_matched_pose_gtsam = sophusSE3TogtsamPose3(icp_matched_pose);
+        const gtsam::Pose3 icp_delta = last_pose_gtsam.between(icp_matched_pose_gtsam);
         gtsam::NonlinearFactorGraph gtSAMgraph;
         gtsam::Values initialEstimate;
+        gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(last_lidar_frame_id, lidar_frame_id, icp_delta, odometryNoise));
+        initialEstimate.insert(lidar_frame_id, icp_matched_pose_gtsam);
 
 
-        gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(lidar_frame_id - 1, lidar_frame_id, delta, odometryNoise));
-        initialEstimate.insert(lidar_frame_id, poseTo);
-
-
-        std::optional<Eigen::Vector3d> current_gps;
+        std::optional<Eigen::Vector3d> current_gps{};
         {
             std::lock_guard lock(gps_buffer_mutex_);
-            auto gps_here_opt = gps_buffer_.get_msg_cloest(lidar_time, 100ms);
-            if (gps_here_opt.has_value()) {
-                const auto current_gps_ptr = gps_here_opt.value();
-                current_gps = *current_gps_ptr;
+            if (gps_buffer_.Has(lidar_time_carto)) {
+                auto gps = gps_buffer_.Lookup(lidar_time_carto);
+                current_gps = gps.translation();
             }
         }
         RCLCPP_DEBUG_STREAM(get_logger(), "find  gps at  " << lidar_time << " : " << current_gps.has_value());
 
         bool key_frame_added = false;
-        auto add_current_frame_as_key = [&key_frame_added, &lidar_time, &frame_downsample, &current_gps, &poseTo, this]() {
+        auto add_current_frame_as_key = [&key_frame_added, &lidar_time, &frame_downsample, &current_gps, &icp_matched_pose_gtsam, this]() {
             KeyFrameInfo key_frame;
             key_frame.gps = current_gps;
             key_frame.id = lidar_frame_id;
             key_frame.points = frame_downsample;
             key_frame.timestamp = lidar_time;
-            key_frame_manager_.put_in(key_frame, poseTo);
+            key_frame_manager_.put_in(key_frame, icp_matched_pose_gtsam);
             key_frame_added = true;
         };
 
-        constexpr double gps_distance_threshold = 3.0;
-        constexpr double lidar_distance_threshold = 3.0;
-        constexpr double lidar_angle_threshold = M_PI / 180 * 10;// 10 degree
 
-        if (current_gps) {// if we have gps, we check if the gps is far enough from last gps in key frames
-            if (key_frame_manager_.get_distance_to_last_gps(current_gps.value()) > gps_distance_threshold) {
-                // add gps constrain  // here we share the same condition for adding key frame and adding gps constrains
-                gtsam::GPSFactor gps_factor(lidar_frame_id,// the latest key
-                                            gtsam::Point3(current_gps->x(), current_gps->y(), current_gps->z()),
-                                            gps_config_.noise);
-                gtSAMgraph.add(gps_factor);
-                RCLCPP_INFO_STREAM(get_logger(), "add gps constrain for " << lidar_frame_id << "  " << current_gps->transpose());
-                add_current_frame_as_key();
-            }
-        } else {
-            // we check if lidar odometry is moving far enough
-            if (key_frame_manager_.get_distance_to_last_key(poseTo.translation()) > lidar_distance_threshold
-                //                or key_frame_manager_.get_angle_to_last_key(poseTo.rotation()) > lidar_angle_threshold // 360 degree lidar may not need this
-            ) {
-                add_current_frame_as_key();
-            }
+        // check if we need to add key frame
+        {
+                    constexpr double gps_distance_threshold = 1.0;
+                    constexpr double lidar_distance_threshold = 1.0;
+                    constexpr double lidar_angle_threshold = M_PI / 180 * 30;// 10 degree
+                    if (current_gps) {// if we have gps, we check if the gps is far enough from last gps in key frames
+                        if (key_frame_manager_.get_distance_to_last_gps(current_gps.value()) > gps_distance_threshold) {
+                            // add gps constrain  // here we share the same condition for adding key frame and adding gps constrains
+                            gtsam::GPSFactor gps_factor(lidar_frame_id,// the latest key
+                                                        gtsam::Point3(current_gps->x(), current_gps->y(), current_gps->z()),
+                                                        gps_config_.noise);
+                            gtSAMgraph.add(gps_factor);
+                            RCLCPP_INFO_STREAM(get_logger(), "add gps constrain for " << lidar_frame_id << "  " << current_gps->transpose());
+                            add_current_frame_as_key();
+                        }
+                    } else {
+                        // we check if lidar odometry is moving far enough
+                        if (key_frame_manager_.get_distance_to_last_key(icp_matched_pose_gtsam.translation()) > lidar_distance_threshold
+                            //                or key_frame_manager_.get_angle_to_last_key(poseTo.rotation()) > lidar_angle_threshold // 360 degree lidar may not need this
+                        ) {
+                            add_current_frame_as_key();
+                        }
+                    }
         }
+
+//        if (current_gps) {// if we have gps, we check if the gps is far enough from last gps in key frames
+//            gtsam::GPSFactor gps_factor(lidar_frame_id,// the latest key
+//                                        gtsam::Point3(current_gps->x(), current_gps->y(), current_gps->z()),
+//                                        gps_config_.noise);
+//            gtSAMgraph.add(gps_factor);
+//            RCLCPP_INFO_STREAM(get_logger(), "add gps constrain for " << lidar_frame_id << "  " << current_gps->transpose());
+//            add_current_frame_as_key();
+//        } else {
+//            add_current_frame_as_key();
+//        }
 
 
         auto closure_data = sc_loop_.get_all_unused_closure();
         for (const auto &item: closure_data) {
+                    // giseop, robust kernel for a SC loop
+                    constexpr float robustNoiseScore = 0.5;// constant is ok...
+                    gtsam::Vector robustNoiseVector6(6);
+                    robustNoiseVector6 << robustNoiseScore, robustNoiseScore, robustNoiseScore, robustNoiseScore, robustNoiseScore, robustNoiseScore;
+                    gtsam::noiseModel::Base::shared_ptr noiseBetween = gtsam::noiseModel::Robust::Create(
+                            gtsam::noiseModel::mEstimator::Cauchy::Create(1),           // optional: replacing Cauchy by DCS or GemanMcClure, but with a good front-end loop detector, Cauchy is empirically enough.
+                            gtsam::noiseModel::Diagonal::Variances(robustNoiseVector6));// - checked it works. but with robust kernel, map modification may be delayed (i.e,. requires more true-positive loop factors)
 
-
-            // giseop, robust kernel for a SC loop
-            constexpr float robustNoiseScore = 0.5;// constant is ok...
-            gtsam::Vector robustNoiseVector6(6);
-            robustNoiseVector6 << robustNoiseScore, robustNoiseScore, robustNoiseScore, robustNoiseScore, robustNoiseScore, robustNoiseScore;
-            gtsam::noiseModel::Base::shared_ptr noiseBetween = gtsam::noiseModel::Robust::Create(
-                    gtsam::noiseModel::mEstimator::Cauchy::Create(1),           // optional: replacing Cauchy by DCS or GemanMcClure, but with a good front-end loop detector, Cauchy is empirically enough.
-                    gtsam::noiseModel::Diagonal::Variances(robustNoiseVector6));// - checked it works. but with robust kernel, map modification may be delayed (i.e,. requires more true-positive loop factors)
-
-            gtsam::Pose3 poseBetween(item.transform.matrix());
-            gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(item.from_id, item.to_id, poseBetween, noiseBetween));
+                    gtsam::Pose3 poseBetween(item.transform.matrix());
+                    gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(item.from_id, item.to_id, poseBetween, noiseBetween));
         }
 
 
@@ -381,10 +390,13 @@ namespace kiss_icp_ros {
             sc_loop_.update_key_pose(isam_poses_);
         }
 
-        // loop closure detection
-        if (key_frame_added) {// 只计算key frame 的 回环
-            //sc_loop_.CalculateLoopClosure(lidar_frame_id, frame_downsample);
-        }
+        //        // loop closure detection
+        //        if (key_frame_added) {// 只计算key frame 的 回环
+        //            //sc_loop_.CalculateLoopClosure(lidar_frame_id, frame_downsample);
+        //        }
+
+        // calculate loop closure
+        sc_loop_.CalculateLoopClosure(lidar_frame_id, frame_downsample);
 
 
         std_msgs::msg::Header odom_header;
@@ -423,7 +435,7 @@ namespace kiss_icp_ros {
 
         cartographer::transform::Rigid3d current_pos(t_current, q_current);
 
-        pose_extrapolator_->AddPose(lidar_time_ros_carto, current_pos);
+        pose_extrapolator_->AddPose(lidar_time_carto, current_pos);
 
 
         auto local_map_header = msg->header;
@@ -432,9 +444,9 @@ namespace kiss_icp_ros {
     }
 
     void OdometryServer::gpsHandler(const sensor_msgs::msg::NavSatFix::ConstSharedPtr &gpsMsg) {
-        int64_t time = rclcpp::Time(gpsMsg->header.stamp).nanoseconds();
-
-        RCLCPP_DEBUG(get_logger(), "gpsHandler %ld", time);
+        const rclcpp::Time gps_time_ros(gpsMsg->header.stamp, get_clock()->get_clock_type());
+        const cartographer::common::Time gps_time_carto = cartographer_ros::FromRos(gps_time_ros);
+        RCLCPP_DEBUG(get_logger(), "gpsHandler %ld", gps_time_ros.nanoseconds());
         Eigen::Isometry3d gps2base;
         try {
             auto imu2base = tf_buffer_->lookupTransform(gpsMsg->header.frame_id, child_frame_, tf2::TimePointZero);// if the tf is not static, we should look at the frame time
@@ -455,9 +467,12 @@ namespace kiss_icp_ros {
 
         trans_local_ = gps2base * trans_local_;
 
+        cartographer::transform::Rigid3d gps_pose{
+                trans_local_, Eigen::Quaterniond{}};
+
         {
             std::lock_guard<std::mutex> lock(gps_buffer_mutex_);
-            gps_buffer_.put_in(time, trans_local_);
+            gps_buffer_.Push(gps_time_carto, gps_pose);
         }
     }
 }// namespace kiss_icp_ros

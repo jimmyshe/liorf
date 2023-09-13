@@ -34,7 +34,6 @@ namespace kiss_icp_ros {
     public:
         void put_in(const KeyFrameInfo &key_frame_info, const gtsam::Pose3 &pose);
 
-
         void update_key_frame_pose(const std::map<size_t, gtsam::Pose3> &new_poses);
 
         double get_distance_to_last_gps(const Eigen::Vector3d &new_gps) const;

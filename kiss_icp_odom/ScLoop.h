@@ -38,17 +38,7 @@ namespace kiss_icp_ros {
             return loop_closure_data_.get();
         }
 
-        std::vector<LoopClosureData> get_all_unused_closure() {
-            auto lock = loop_closure_data_.synchronize();
-            std::vector<LoopClosureData> unused;
-            for (auto &data: *lock) {
-                if (!data.used) {
-                    unused.push_back(data);
-                    data.used = true;
-                }
-            }
-            return unused;
-        }
+        std::vector<LoopClosureData> get_all_unused_closure();
 
 
         std::vector<visualization_msgs::msg::Marker> get_loop_closure_markers(std_msgs::msg::Header header, std::string ns = "loop_closure");

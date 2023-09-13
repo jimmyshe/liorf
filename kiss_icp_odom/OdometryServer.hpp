@@ -29,7 +29,6 @@
 #include <gtsam/nonlinear/ISAM2.h>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 // ROS 2
-#include "MsgBuffer.h"
 #include "SophusGtsamConverter.h"
 #include "kiss_icp/core/Preprocessing.hpp"
 #include "kiss_icp/pipeline/KissICP.hpp"
@@ -50,6 +49,7 @@
 
 #include <cartographer/mapping/pose_extrapolator.h>
 #include <cartographer_ros/msg_conversion.h>
+#include <cartographer/transform/transform_interpolation_buffer.h>
 
 namespace kiss_icp_ros {
 
@@ -82,20 +82,13 @@ namespace kiss_icp_ros {
 
 
 
-        double GetAdaptiveThreshold(size_t id) {
-            if (!HasMoved(id)) {
-                return config_.initial_threshold;
-            }
-            return adaptive_threshold_->ComputeThreshold();
-        }
 
-        Sophus::SE3d GetPredictionModel(size_t id) const {
-            if (isam_poses_.contains(id - 1) and isam_poses_.contains(id - 2)) {
-                return gtsamPose3toSouphusSE3(isam_poses_.at(id - 2).inverse().compose(isam_poses_.at(id - 1)));
-            }
-            Sophus::SE3d pred = Sophus::SE3d();
-            return pred;
-        }
+
+        //isam
+        std::unique_ptr<gtsam::ISAM2> isam;
+        std::mutex isam_mutex_;
+        std::map<size_t, gtsam::Pose3> isam_poses_;
+
 
         bool HasMoved(size_t id) {
             if (isam_poses_.contains(id - 1) and isam_poses_.contains(id - 2)) {
@@ -105,28 +98,6 @@ namespace kiss_icp_ros {
             return false;
         }
 
-        //        Sophus::SE3d GetPredictionModel() const {
-        //            Sophus::SE3d pred = Sophus::SE3d();
-        //            const size_t N = poses_.size();
-        //            if (N < 2) return pred;
-        //            return poses_[N - 2].inverse() * poses_[N - 1];
-        //        }
-        //
-        //        bool HasMoved() {
-        //            if (poses_.empty()) return false;
-        //            const double motion = (poses_.front().inverse() * poses_.back()).translation().norm();
-        //            return motion > 5.0 * config_.min_motion_th;
-        //        }
-
-        //isam
-        std::unique_ptr<gtsam::ISAM2> isam;
-
-        std::mutex isam_mutex_;
-        std::map<size_t, gtsam::Pose3> isam_poses_;
-
-        //gps q
-        std::mutex gps_buffer_mutex_;
-        MsgBuffer<Eigen::Vector3d> gps_buffer_;
 
 
 
@@ -165,17 +136,25 @@ namespace kiss_icp_ros {
         rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr gtsam_path_publisher_;
 
 
+
+
         /// KISS-ICP
         kiss_icp::pipeline::KISSConfig config_;
-        GpsConfig gps_config_;
-        // KISS-ICP pipeline modules
         std::unique_ptr<kiss_icp::AdaptiveThreshold> adaptive_threshold_;
+
+
+
         /// Global/map coordinate frame.
         std::string odom_frame_{"odom"};
         std::string child_frame_{"base_link"};
 
-
+        /*
+         * GPS
+         */
+        GpsConfig gps_config_;
         GeographicLib::LocalCartesian gps_trans_;
+        std::mutex gps_buffer_mutex_;
+        cartographer::transform::TransformInterpolationBuffer gps_buffer_;
 
         ScLoop sc_loop_;
         std::unique_ptr<cartographer::mapping::PoseExtrapolator> pose_extrapolator_;

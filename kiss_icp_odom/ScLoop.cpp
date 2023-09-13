@@ -27,23 +27,31 @@ void kiss_icp_ros::ScLoop::CalculateLoopClosure(size_t laser_id, std::vector<Eig
         RCLCPP_DEBUG(rclcpp::get_logger("scloop"), "No loop closure found");
         return;
     }
-    RCLCPP_INFO(rclcpp::get_logger("scloop"), "Loop closure found %d to %d", current_sc_index, related_sc_index);
+
+    const auto related_lidar_frame_id = sc_to_lidar_key_dict.at(related_sc_index);
+    const auto current_lidar_frame_id = sc_to_lidar_key_dict.at(current_sc_index);
 
     Eigen::Isometry3d current2related_original;
     {
         auto k2p = key_to_pose_dict.synchronize();
-        auto related_pose = k2p->at(sc_to_lidar_key_dict.at(related_sc_index));
-        auto current_pose = k2p->at(sc_to_lidar_key_dict.at(current_sc_index));
+        auto related_pose = k2p->at(related_lidar_frame_id);
+        auto current_pose = k2p->at(current_lidar_frame_id);
         current2related_original = current_pose.inverse() * related_pose;
     }
-
-    const auto &current_cloud = cloud;
-    auto related_cloud = sc_key_to_cloud_dict.at(related_sc_index);
+    auto c2r_norm = current2related_original.translation().norm();
+    RCLCPP_INFO(rclcpp::get_logger("scloop"), "Loop closure found %lu to %lu with distance %f", current_lidar_frame_id, related_lidar_frame_id, c2r_norm);
 
 
     constexpr double historyKeyframeSearchRadius = 15;
     constexpr double historyKeyframeFitnessScore = 0.3;
 
+    if (c2r_norm > historyKeyframeSearchRadius) {
+        RCLCPP_INFO(rclcpp::get_logger("scloop"), "Loop closure found %lu to %lu with distance %f, but too far", current_lidar_frame_id, related_lidar_frame_id, c2r_norm);
+        return;
+    }
+
+    const auto &current_cloud = cloud;
+    auto related_cloud = sc_key_to_cloud_dict.at(related_sc_index);
     // ICP Settings
     pcl::IterativeClosestPoint<PointType, PointType> icp;
     icp.setMaxCorrespondenceDistance(historyKeyframeSearchRadius * 2);
@@ -58,20 +66,25 @@ void kiss_icp_ros::ScLoop::CalculateLoopClosure(size_t laser_id, std::vector<Eig
     pcl::PointCloud<PointType>::Ptr unused_result(new pcl::PointCloud<PointType>());
     icp.align(*unused_result, current2related_original.matrix().cast<float>());
 
-    if (icp.hasConverged() == false || icp.getFitnessScore() > historyKeyframeFitnessScore) {
+    if (!icp.hasConverged()) {
         RCLCPP_INFO(rclcpp::get_logger("scloop"), "ICP has not converged, fitness score is %f", icp.getFitnessScore());
         return;
     }
-
+    //    if (icp.getFitnessScore() > historyKeyframeFitnessScore) {
+    //        RCLCPP_INFO(rclcpp::get_logger("scloop"), "ICP has converged, but fitness score is %f", icp.getFitnessScore());
+    //        return;
+    //    }
 
     Eigen::Matrix4d final = icp.getFinalTransformation().cast<double>();
-    Eigen::Isometry3d correction(final);
-    RCLCPP_INFO(rclcpp::get_logger("scloop"), "ICP has converged, fitness score is %f", icp.getFitnessScore());
+    Eigen::Isometry3d c2r_corrected(final);
+    Eigen::Isometry3d residual = current2related_original.inverse() * c2r_corrected;
+
+    RCLCPP_INFO(rclcpp::get_logger("scloop"), "ICP has converged, fitness score is %f, residual %f", icp.getFitnessScore(), residual.translation().norm());
 
     LoopClosureData data;
-    data.from_id = sc_to_lidar_key_dict.at(current_sc_index);
-    data.to_id = sc_to_lidar_key_dict.at(related_sc_index);
-    data.transform = correction;
+    data.from_id = current_lidar_frame_id;
+    data.to_id = related_lidar_frame_id;
+    data.transform = c2r_corrected;
     data.fitness = icp.getFitnessScore();
     {
         auto lock = loop_closure_data_.synchronize();
@@ -83,15 +96,17 @@ std::vector<visualization_msgs::msg::Marker> kiss_icp_ros::ScLoop::get_loop_clos
     auto closure_date_copy = get_all_closure();
     auto key_to_pose_dict_copy = key_to_pose_dict.get();
 
+    constexpr double scale = 0.02;
+
     visualization_msgs::msg::Marker closure_marker;
     closure_marker.header = header;
     closure_marker.ns = ns;
     closure_marker.id = 0;
     closure_marker.type = visualization_msgs::msg::Marker::LINE_LIST;
     closure_marker.action = visualization_msgs::msg::Marker::ADD;
-    closure_marker.scale.x = 0.1;
-    closure_marker.scale.y = 0.1;
-    closure_marker.scale.z = 0.1;
+    closure_marker.scale.x = scale;
+    closure_marker.scale.y = scale;
+    closure_marker.scale.z = scale;
     closure_marker.color = get_loop_closure_color();
 
     visualization_msgs::msg::Marker residual_marker;
@@ -100,10 +115,10 @@ std::vector<visualization_msgs::msg::Marker> kiss_icp_ros::ScLoop::get_loop_clos
     residual_marker.id = 1;
     residual_marker.type = visualization_msgs::msg::Marker::LINE_LIST;
     residual_marker.action = visualization_msgs::msg::Marker::ADD;
-    residual_marker.scale.x = 0.1;
-    residual_marker.scale.y = 0.1;
-    residual_marker.scale.z = 0.1;
-    residual_marker.color = get_loop_closure_color();
+    residual_marker.scale.x = scale;
+    residual_marker.scale.y = scale;
+    residual_marker.scale.z = scale;
+    residual_marker.color = get_loop_residual_color();
 
 
     for (const auto &item: closure_date_copy) {
@@ -127,10 +142,11 @@ std::vector<visualization_msgs::msg::Marker> kiss_icp_ros::ScLoop::get_loop_clos
         match_pose_point.z = match_pose.translation().z();
 
         closure_marker.points.push_back(from_pose_point);
-        closure_marker.points.push_back(match_pose_point);
+        closure_marker.points.push_back(to_pose_point);
 
+        residual_marker.points.push_back(from_pose_point);
         residual_marker.points.push_back(match_pose_point);
-        residual_marker.points.push_back(to_pose_point);
+
     }
 
 
@@ -140,4 +156,15 @@ std::vector<visualization_msgs::msg::Marker> kiss_icp_ros::ScLoop::get_loop_clos
 
 
     return markers;
+}
+std::vector<kiss_icp_ros::ScLoop::LoopClosureData> kiss_icp_ros::ScLoop::get_all_unused_closure() {
+    auto lock = loop_closure_data_.synchronize();
+    std::vector<LoopClosureData> unused;
+    for (auto &data: *lock) {
+        if (!data.used) {
+            unused.push_back(data);
+            data.used = true;
+        }
+    }
+    return unused;
 }
