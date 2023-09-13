@@ -24,6 +24,10 @@ find_package(PCL REQUIRED QUIET)
 find_package(OpenCV REQUIRED QUIET)
 find_package(GTSAM REQUIRED QUIET)
 find_package(Boost REQUIRED COMPONENTS timer)
+find_package(Lua REQUIRED)
+find_package(cartographer REQUIRED)
+
+
 
 set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH};/usr/share/cmake/geographiclib") # This is a hack to find GeographicLib, see https://bugs.launchpad.net/ubuntu/+source/geographiclib/+bug/1805173
 find_package(GeographicLib REQUIRED)
@@ -86,7 +90,13 @@ target_link_libraries(${PROJECT_NAME}_mapOptmization
         scan_context)
 
 ament_auto_add_executable(kiss_icp_odom kiss_icp_odom/OdometryServer.cpp kiss_icp_odom/OdometryServerNode.cpp kiss_icp_odom/KeyFrameManager.cpp kiss_icp_odom/ScLoop.cpp)
-target_link_libraries(kiss_icp_odom kiss_icp::pipeline gtsam ${GeographicLib_LIBRARIES} scan_context)
+target_link_libraries(kiss_icp_odom kiss_icp::pipeline gtsam ${GeographicLib_LIBRARIES}
+        ${LUA_LIBRARIES}
+        scan_context
+        cartographer
+)
+target_include_directories(kiss_icp_odom PUBLIC
+        ${LUA_INCLUDE_DIR})
 
 
 ament_auto_package(INSTALL_TO_SHARE

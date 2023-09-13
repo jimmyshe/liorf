@@ -48,6 +48,8 @@
 #include "KeyFrameManager.h"
 #include "ScLoop.h"
 
+#include <cartographer/mapping/pose_extrapolator.h>
+#include <cartographer_ros/msg_conversion.h>
 
 namespace kiss_icp_ros {
 
@@ -176,6 +178,8 @@ namespace kiss_icp_ros {
         GeographicLib::LocalCartesian gps_trans_;
 
         ScLoop sc_loop_;
+        std::unique_ptr<cartographer::mapping::PoseExtrapolator> pose_extrapolator_;
+
     };
 
 }// namespace kiss_icp_ros

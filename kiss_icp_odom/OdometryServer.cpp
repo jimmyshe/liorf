@@ -62,6 +62,7 @@
 #include <gtsam/slam/PriorFactor.h>
 
 #include "SophusGtsamConverter.h"
+#include <cartographer_ros/time_conversion.h>
 #include <tf2_eigen/tf2_eigen.hpp>
 
 using namespace std::chrono_literals;
@@ -73,6 +74,11 @@ namespace kiss_icp_ros {
 
     OdometryServer::OdometryServer(const rclcpp::NodeOptions &options)
         : rclcpp::Node("odometry_node", options), gps_buffer_(100) {
+
+        cartographer::common::Duration pose_queue_duration = cartographer::common::FromSeconds(5.0);
+        pose_extrapolator_ = std::make_unique<cartographer::mapping::PoseExtrapolator>(1s, 17);// 17 is from cartographer_ros default value
+
+
         child_frame_ = declare_parameter<std::string>("child_frame", child_frame_);
         odom_frame_ = declare_parameter<std::string>("odom_frame", odom_frame_);
         publish_odom_tf_ = declare_parameter<bool>("publish_odom_tf", publish_odom_tf_);
@@ -219,7 +225,12 @@ namespace kiss_icp_ros {
 
         static boost::circular_buffer<CloudWithId> cloud_buffer_(10);
         static size_t lidar_frame_id = 0;
-        int64_t lidar_time = rclcpp::Time(msg->header.stamp).nanoseconds();
+        const rclcpp::Time lidar_time_ros(msg->header.stamp);
+        const int64_t lidar_time = lidar_time_ros.nanoseconds();
+
+        const cartographer::common::Time lidar_time_ros_carto = cartographer_ros::FromRos(lidar_time_ros);
+
+
         sensor_msgs::msg::PointCloud2::SharedPtr msg_at_base(new sensor_msgs::msg::PointCloud2);
         try {
             auto lidar2base = tf_buffer_->lookupTransform(msg->header.frame_id, child_frame_, tf2::TimePointZero);// if the tf is not static, we should look at the frame time
@@ -228,8 +239,13 @@ namespace kiss_icp_ros {
             RCLCPP_ERROR(this->get_logger(), "%s 2 %s tf is not available %s", msg->header.frame_id.c_str(), child_frame_.c_str(), ex.what());
             return;
         }
-
         lidar_frame_id++;
+
+        Sophus::SE3d initial_guess;
+        if (pose_extrapolator_->GetLastPoseTime() != cartographer::common::Time::min()) {
+            const auto guess_pose = pose_extrapolator_->ExtrapolatePose(lidar_time_ros_carto);
+            initial_guess = Sophus::SE3d(guess_pose.rotation(), guess_pose.translation());
+        }
 
 
         const auto points = PointCloud2ToEigen(msg_at_base);
@@ -249,11 +265,12 @@ namespace kiss_icp_ros {
         // Get motion prediction and adaptive_threshold
         const double sigma = GetAdaptiveThreshold(lidar_frame_id);
 
-        // Compute initial_guess for ICP
         isam_mutex_.lock();
-        const auto prediction = GetPredictionModel(lidar_frame_id);
+        // Compute initial_guess for ICP
+        //        const auto prediction = GetPredictionModel(lidar_frame_id);
         const auto last_pose = isam_poses_.contains(lidar_frame_id - 1) ? gtsamPose3toSouphusSE3(isam_poses_.at(lidar_frame_id - 1)) : Sophus::SE3d();
-        const auto initial_guess = last_pose * prediction;
+        //        const auto initial_guess = last_pose * prediction;
+        //
         kiss_icp::VoxelHashMap local_map(config_.voxel_size, config_.max_range, config_.max_points_per_voxel);
         for (const auto &cloud_with_id: cloud_buffer_) {
             local_map.Update(cloud_with_id.points, gtsamPose3toSouphusSE3(isam_poses_.at(cloud_with_id.id)));
@@ -325,8 +342,8 @@ namespace kiss_icp_ros {
         } else {
             // we check if lidar odometry is moving far enough
             if (key_frame_manager_.get_distance_to_last_key(poseTo.translation()) > lidar_distance_threshold
-//                or key_frame_manager_.get_angle_to_last_key(poseTo.rotation()) > lidar_angle_threshold // 360 degree lidar may not need this
-                ) {
+                //                or key_frame_manager_.get_angle_to_last_key(poseTo.rotation()) > lidar_angle_threshold // 360 degree lidar may not need this
+            ) {
                 add_current_frame_as_key();
             }
         }
@@ -402,6 +419,11 @@ namespace kiss_icp_ros {
             //            RCLCPP_INFO(get_logger(), "Broadcasted tf from %s to %s", odom_frame_.c_str(),
             //                        child_frame_.c_str());
         }
+
+
+        cartographer::transform::Rigid3d current_pos(t_current, q_current);
+
+        pose_extrapolator_->AddPose(lidar_time_ros_carto, current_pos);
 
 
         auto local_map_header = msg->header;
